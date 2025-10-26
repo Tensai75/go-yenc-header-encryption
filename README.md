@@ -1,3 +1,6 @@
+[![Godoc](https://godoc.org/github.com/Tensai75/go-yenc-header-encryption?status.svg)](http://godoc.org/github.com/Tensai75/go-yenc-header-encryption)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square)](https://opensource.org/licenses/MIT)
+
 # yEnc Control Lines Encryption - Go Implementation
 
 This is the reference Go implementation of the **yEnc Control Lines Encryption Standard**, providing format-preserving encryption for yEnc control lines while maintaining full compatibility with existing yEnc parsers and protocols.
