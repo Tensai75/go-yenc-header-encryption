@@ -1,454 +1,542 @@
-package yEncHeaderEnc
+﻿package yEncHeaderEnc
 
 import (
+	"bytes"
+	"crypto/rand"
+	"fmt"
 	"strings"
 	"testing"
 )
 
-// Test data for various yEnc block formats
-var testData = []struct {
-	name     string
-	input    string
-	password string
-	segment  uint32
-}{
-	{
-		name:     "Basic yEnc block",
-		password: "test_password",
-		segment:  1,
-		input: `=ybegin line=128 size=12345 name=test.bin
-=ypart begin=1 end=5000
-data line 1
-data line 2
-=yend size=12345 crc32=abcd1234`,
-	},
-	{
-		name:     "Simple yEnc block without ypart",
-		password: "simple_pass",
-		segment:  1,
-		input: `=ybegin line=64 size=1024 name=small.txt
-first data line
-second data line
-third data line
-=yend size=1024`,
-	},
-	{
-		name:     "Multi-part yEnc block",
-		password: "multi_segment_key",
-		segment:  2,
-		input: `=ybegin line=128 size=50000 name=large.bin
-=ypart begin=10001 end=20000
-encoded binary data here
-more encoded data
-even more data
-=yend size=10000 part=2 pcrc32=12345678`,
-	},
-	{
-		name:     "yEnc with CRLF line endings",
-		password: "crlf_test",
-		segment:  1,
-		input: "=ybegin line=64 size=100 name=crlf.txt\r\n" +
-			"data with crlf\r\n" +
-			"more data\r\n" +
-			"=yend size=100\r\n",
-	},
-	{
-		name:     "Empty password edge case",
-		password: "",
-		segment:  1,
-		input: `=ybegin line=32 size=50 name=empty_pass.txt
-minimal data
-=yend size=50`,
-	},
+// Test the Alphabet function
+func TestAlphabet(t *testing.T) {
+	alphabet := Alphabet()
+
+	// Test alphabet length
+	if len(alphabet) != 253 {
+		t.Errorf("Expected alphabet length 253, got %d", len(alphabet))
+	}
+
+	// Test that forbidden characters are not present
+	forbiddenChars := []byte{0x00, 0x0A, 0x0D}
+	for _, char := range forbiddenChars {
+		if bytes.Contains(alphabet, []byte{char}) {
+			t.Errorf("Alphabet contains forbidden character 0x%02X", char)
+		}
+	}
+
+	// Test that alphabet starts with 0x01 and contains expected ranges
+	if alphabet[0] != 0x01 {
+		t.Errorf("Expected alphabet to start with 0x01, got 0x%02X", alphabet[0])
+	}
+
+	// Test that alphabet contains 0xFF (last valid character)
+	if alphabet[len(alphabet)-1] != 0xFF {
+		t.Errorf("Expected alphabet to end with 0xFF, got 0x%02X", alphabet[len(alphabet)-1])
+	}
 }
 
-// TestEncryptDecryptRoundTrip tests that encryption followed by decryption returns the original text
-func TestEncryptDecryptRoundTrip(t *testing.T) {
-	for _, td := range testData {
-		t.Run(td.name, func(t *testing.T) {
-			// Encrypt the input
-			encrypted, err := Encrypt(td.input, td.segment, td.password)
+// Test the GenerateSalt function
+func TestGenerateSalt(t *testing.T) {
+	// Test that salt is generated successfully
+	salt, err := GenerateSalt()
+	if err != nil {
+		t.Fatalf("GenerateSalt failed: %v", err)
+	}
+
+	// Test salt length
+	if len(salt) != 16 {
+		t.Errorf("Expected salt length 16, got %d", len(salt))
+	}
+
+	// Test that all bytes are from yEnc alphabet
+	alphabet := Alphabet()
+	for i, b := range salt {
+		if !bytes.Contains(alphabet, []byte{b}) {
+			t.Errorf("Salt byte %d (0x%02X) is not in yEnc alphabet", i, b)
+		}
+	}
+
+	// Test that multiple calls produce different salts (very high probability)
+	salt2, err := GenerateSalt()
+	if err != nil {
+		t.Fatalf("Second GenerateSalt failed: %v", err)
+	}
+
+	if bytes.Equal(salt, salt2) {
+		t.Error("Two consecutive GenerateSalt calls produced identical salts (extremely unlikely)")
+	}
+
+	// Test that no forbidden characters are present
+	forbiddenChars := []byte{0x00, 0x0A, 0x0D}
+	for i, b := range salt {
+		for _, forbidden := range forbiddenChars {
+			if b == forbidden {
+				t.Errorf("Salt contains forbidden character 0x%02X at position %d", forbidden, i)
+			}
+		}
+	}
+}
+
+// Test the DeriveMasterKey function
+func TestDeriveMasterKey(t *testing.T) {
+	password := "testpassword"
+	salt := []byte("1234567890123456") // 16 bytes
+
+	// Test basic functionality
+	masterKey := DeriveMasterKey(password, salt)
+
+	// Test master key length
+	if len(masterKey) != 32 {
+		t.Errorf("Expected master key length 32, got %d", len(masterKey))
+	}
+
+	// Test deterministic behavior
+	masterKey2 := DeriveMasterKey(password, salt)
+	if !bytes.Equal(masterKey, masterKey2) {
+		t.Error("DeriveMasterKey is not deterministic")
+	}
+
+	// Test different passwords produce different keys
+	masterKey3 := DeriveMasterKey("differentpassword", salt)
+	if bytes.Equal(masterKey, masterKey3) {
+		t.Error("Different passwords produced identical master keys")
+	}
+
+	// Test different salts produce different keys
+	salt2 := []byte("6543210987654321")
+	masterKey4 := DeriveMasterKey(password, salt2)
+	if bytes.Equal(masterKey, masterKey4) {
+		t.Error("Different salts produced identical master keys")
+	}
+}
+
+// Test the DeriveEncKey function
+func TestDeriveEncKey(t *testing.T) {
+	// Create a test master key
+	masterKey := make([]byte, 32)
+	rand.Read(masterKey)
+
+	// Test basic functionality
+	encKey := DeriveEncKey(masterKey)
+
+	// Test encryption key length
+	if len(encKey) != 32 {
+		t.Errorf("Expected encryption key length 32, got %d", len(encKey))
+	}
+
+	// Test deterministic behavior
+	encKey2 := DeriveEncKey(masterKey)
+	if !bytes.Equal(encKey, encKey2) {
+		t.Error("DeriveEncKey is not deterministic")
+	}
+
+	// Test different master keys produce different encryption keys
+	masterKey2 := make([]byte, 32)
+	rand.Read(masterKey2)
+	encKey3 := DeriveEncKey(masterKey2)
+	if bytes.Equal(encKey, encKey3) {
+		t.Error("Different master keys produced identical encryption keys")
+	}
+}
+
+// Test the DeriveTweak function
+func TestDeriveTweak(t *testing.T) {
+	// Create a test master key
+	masterKey := make([]byte, 32)
+	rand.Read(masterKey)
+
+	segmentIndex := uint32(1)
+	lineIndex := uint32(1)
+
+	// Test basic functionality
+	tweak := DeriveTweak(masterKey, segmentIndex, lineIndex)
+
+	// Test tweak length
+	if len(tweak) != 8 {
+		t.Errorf("Expected tweak length 8, got %d", len(tweak))
+	}
+
+	// Test deterministic behavior
+	tweak2 := DeriveTweak(masterKey, segmentIndex, lineIndex)
+	if !bytes.Equal(tweak, tweak2) {
+		t.Error("DeriveTweak is not deterministic")
+	}
+
+	// Test different segment indices produce different tweaks
+	tweak3 := DeriveTweak(masterKey, 2, lineIndex)
+	if bytes.Equal(tweak, tweak3) {
+		t.Error("Different segment indices produced identical tweaks")
+	}
+
+	// Test different line indices produce different tweaks
+	tweak4 := DeriveTweak(masterKey, segmentIndex, 2)
+	if bytes.Equal(tweak, tweak4) {
+		t.Error("Different line indices produced identical tweaks")
+	}
+
+	// Test different master keys produce different tweaks
+	masterKey2 := make([]byte, 32)
+	rand.Read(masterKey2)
+	tweak5 := DeriveTweak(masterKey2, segmentIndex, lineIndex)
+	if bytes.Equal(tweak, tweak5) {
+		t.Error("Different master keys produced identical tweaks")
+	}
+}
+
+// Test the NewCipher function
+func TestNewCipher(t *testing.T) {
+	// Test successful creation
+	cipher, err := NewCipher("testpassword")
+	if err != nil {
+		t.Fatalf("NewCipher failed: %v", err)
+	}
+
+	if cipher == nil {
+		t.Fatal("NewCipher returned nil cipher")
+	}
+
+	// Test that password is stored
+	if cipher.password != "testpassword" {
+		t.Errorf("Expected password 'testpassword', got '%s'", cipher.password)
+	}
+
+	// Test empty password rejection
+	_, err = NewCipher("")
+	if err == nil {
+		t.Error("NewCipher should reject empty password")
+	}
+}
+
+// Test the Cipher.initialize function
+func TestCipherInitialize(t *testing.T) {
+	cipher, err := NewCipher("testpassword")
+	if err != nil {
+		t.Fatalf("NewCipher failed: %v", err)
+	}
+
+	// Test initialization with empty salt (should generate new salt)
+	err = cipher.initialize("")
+	if err != nil {
+		t.Fatalf("Initialize with empty salt failed: %v", err)
+	}
+
+	// Verify salt was generated
+	if len(cipher.salt) != 16 {
+		t.Errorf("Expected salt length 16, got %d", len(cipher.salt))
+	}
+
+	// Verify other fields are set
+	if len(cipher.masterKey) != 32 {
+		t.Errorf("Expected master key length 32, got %d", len(cipher.masterKey))
+	}
+
+	if len(cipher.encKey) != 32 {
+		t.Errorf("Expected encryption key length 32, got %d", len(cipher.encKey))
+	}
+
+	if len(cipher.alphabet) != 253 {
+		t.Errorf("Expected alphabet length 253, got %d", len(cipher.alphabet))
+	}
+
+	// Test initialization with provided salt
+	cipher2, _ := NewCipher("testpassword")
+	testSalt := "1234567890123456"
+	err = cipher2.initialize(testSalt)
+	if err != nil {
+		t.Fatalf("Initialize with provided salt failed: %v", err)
+	}
+
+	if string(cipher2.salt) != testSalt {
+		t.Errorf("Expected salt '%s', got '%s'", testSalt, string(cipher2.salt))
+	}
+
+	// Test invalid salt length
+	cipher3, _ := NewCipher("testpassword")
+	err = cipher3.initialize("short")
+	if err == nil {
+		t.Error("Initialize should reject invalid salt length")
+	}
+}
+
+// Test basic encryption and decryption functionality
+func TestCipherEncryptDecrypt(t *testing.T) {
+	cipher, err := NewCipher("testpassword")
+	if err != nil {
+		t.Fatalf("NewCipher failed: %v", err)
+	}
+
+	// Test data with different line endings
+	testCases := []struct {
+		name  string
+		input string
+	}{
+		{
+			name:  "Basic yEnc block with LF",
+			input: "=ybegin line=128 size=1024 name=test.txt\ndata line 1\ndata line 2\n=yend size=1024 crc32=12345678",
+		},
+		{
+			name:  "Basic yEnc block with CRLF",
+			input: "=ybegin line=128 size=1024 name=test.txt\r\ndata line 1\r\ndata line 2\r\n=yend size=1024 crc32=12345678",
+		},
+
+		{
+			name:  "Multi-part yEnc block",
+			input: "=ybegin line=128 size=2048 name=test.txt\n=ypart begin=1 end=1024\ndata content here\n=yend size=1024 part=1 pcrc32=87654321",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Test encryption
+			encrypted, err := cipher.Encrypt(tc.input, 1)
 			if err != nil {
 				t.Fatalf("Encryption failed: %v", err)
 			}
 
-			// Verify encryption actually changed the content
-			if encrypted == td.input {
-				t.Error("Encryption did not change the input (possible encryption failure)")
+			// Verify encryption changed the control lines
+			if encrypted == tc.input {
+				t.Error("Encryption did not change the input")
 			}
 
-			// Decrypt the result
-			decrypted, err := Decrypt(encrypted, td.segment, td.password)
+			// Verify salt was prepended to first line
+			lines := strings.Split(encrypted, "\n")
+			if len(lines[0]) <= len(strings.Split(tc.input, "\n")[0]) {
+				t.Error("First line should be longer after salt prepending")
+			}
+
+			// Test decryption
+			decrypted, err := cipher.Decrypt(encrypted, 1)
 			if err != nil {
 				t.Fatalf("Decryption failed: %v", err)
 			}
 
-			// Verify round-trip success
-			if decrypted != td.input {
-				t.Errorf("Round-trip failed.\nOriginal:\n%s\nDecrypted:\n%s", td.input, decrypted)
+			// Verify round-trip consistency (with normalized line ending)
+			expectedDecrypted := tc.input
+			if !strings.HasSuffix(expectedDecrypted, "\n") {
+				expectedDecrypted += "\n"
+			}
+
+			if decrypted != expectedDecrypted {
+				t.Errorf("Round-trip failed:\nOriginal: %q\nDecrypted: %q", expectedDecrypted, decrypted)
 			}
 		})
 	}
 }
 
-// TestEncryptionDeterministic tests that encryption with same parameters produces same result
-func TestEncryptionDeterministic(t *testing.T) {
-	input := `=ybegin line=64 size=100 name=deterministic.txt
-test data for deterministic encryption
-=yend size=100`
-	password := "deterministic_test"
-	segment := uint32(1)
-
-	// Encrypt the same input multiple times
-	encrypted1, err := Encrypt(input, segment, password)
+// Test encryption with different segment indices
+func TestCipherEncryptDifferentSegments(t *testing.T) {
+	cipher, err := NewCipher("testpassword")
 	if err != nil {
-		t.Fatalf("First encryption failed: %v", err)
+		t.Fatalf("NewCipher failed: %v", err)
 	}
 
-	encrypted2, err := Encrypt(input, segment, password)
-	if err != nil {
-		t.Fatalf("Second encryption failed: %v", err)
-	}
+	input := "=ybegin line=128 size=1024 name=test.txt\ndata line\n=yend size=1024 crc32=12345678"
 
-	// Results should be identical
-	if encrypted1 != encrypted2 {
-		t.Error("Encryption is not deterministic - same input produced different outputs")
-	}
-}
-
-// TestDifferentSegments tests that different segment indices produce different encrypted results
-func TestDifferentSegments(t *testing.T) {
-	input := `=ybegin line=64 size=100 name=segment_test.txt
-test data for segment differentiation
-=yend size=100`
-	password := "segment_test"
-
-	encrypted1, err := Encrypt(input, 1, password)
+	// Encrypt with different segment indices
+	encrypted1, err := cipher.Encrypt(input, 1)
 	if err != nil {
 		t.Fatalf("Encryption with segment 1 failed: %v", err)
 	}
 
-	encrypted2, err := Encrypt(input, 2, password)
+	encrypted2, err := cipher.Encrypt(input, 2)
 	if err != nil {
 		t.Fatalf("Encryption with segment 2 failed: %v", err)
 	}
 
-	// Different segments should produce different encrypted results
+	// Different segments should produce different encrypted output
 	if encrypted1 == encrypted2 {
-		t.Error("Different segment indices produced identical encrypted results")
+		t.Error("Different segment indices produced identical encrypted output")
 	}
 
-	// Both should decrypt correctly to original
-	decrypted1, _ := Decrypt(encrypted1, 1, password)
-	decrypted2, _ := Decrypt(encrypted2, 2, password)
+	// Both should decrypt correctly with their respective segment indices
+	decrypted1, err := cipher.Decrypt(encrypted1, 1)
+	if err != nil {
+		t.Fatalf("Decryption of segment 1 failed: %v", err)
+	}
 
-	if decrypted1 != input || decrypted2 != input {
-		t.Error("Decryption failed for different segments")
+	decrypted2, err := cipher.Decrypt(encrypted2, 2)
+	if err != nil {
+		t.Fatalf("Decryption of segment 2 failed: %v", err)
+	}
+
+	expected := input + "\n"
+	if decrypted1 != expected || decrypted2 != expected {
+		t.Error("Decryption with correct segment indices failed")
 	}
 }
 
-// TestDifferentPasswords tests that different passwords produce different encrypted results
-func TestDifferentPasswords(t *testing.T) {
-	input := `=ybegin line=64 size=100 name=password_test.txt
-test data for password differentiation
-=yend size=100`
-	segment := uint32(1)
-
-	encrypted1, err := Encrypt(input, segment, "password1")
+// Test error cases
+func TestCipherErrorCases(t *testing.T) {
+	cipher, err := NewCipher("testpassword")
 	if err != nil {
-		t.Fatalf("Encryption with password1 failed: %v", err)
+		t.Fatalf("NewCipher failed: %v", err)
 	}
 
-	encrypted2, err := Encrypt(input, segment, "password2")
-	if err != nil {
-		t.Fatalf("Encryption with password2 failed: %v", err)
-	}
-
-	// Different passwords should produce different encrypted results
-	if encrypted1 == encrypted2 {
-		t.Error("Different passwords produced identical encrypted results")
-	}
-}
-
-// TestWrongPassword tests that decryption with wrong password fails or produces garbage
-func TestWrongPassword(t *testing.T) {
-	input := `=ybegin line=64 size=100 name=wrong_pass_test.txt
-test data for wrong password
-=yend size=100`
-	correctPassword := "correct_password"
-	wrongPassword := "wrong_password"
-	segment := uint32(1)
-
-	// Encrypt with correct password
-	encrypted, err := Encrypt(input, segment, correctPassword)
-	if err != nil {
-		t.Fatalf("Encryption failed: %v", err)
-	}
-
-	// Try to decrypt with wrong password
-	decrypted, err := Decrypt(encrypted, segment, wrongPassword)
-	if err != nil {
-		// If decryption fails, that's acceptable behavior
-		return
-	}
-
-	// If decryption succeeds, the result should not match the original
-	if decrypted == input {
-		t.Error("Decryption with wrong password should not produce correct result")
-	}
-}
-
-// TestEmptyInput tests behavior with empty or minimal input
-func TestEmptyInput(t *testing.T) {
-	tests := []struct {
-		name  string
-		input string
-	}{
-		{"Empty string", ""},
-		{"Just newline", "\n"},
-		{"No yEnc headers", "just plain text\nwith no yEnc markers"},
-	}
-
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			_, err := Encrypt(test.input, 1, "test")
-			if err == nil {
-				t.Error("Expected error for invalid yEnc input, but got none")
-			}
-		})
-	}
-}
-
-// TestSplitLineRegex tests the regex function for splitting lines
-func TestSplitLineRegex(t *testing.T) {
-	tests := []struct {
-		input           string
-		expectedContent string
-		expectedEnding  string
-		shouldError     bool
-	}{
-		{"hello world\r\n", "hello world", "\r\n", false},
-		{"test line\n", "test line", "\n", false},
-		{"no ending", "no ending", "", false},
-		{"with cr\r", "with cr", "\r", false},
-		{"", "", "", true}, // Empty string should error
-	}
-
-	for _, test := range tests {
-		content, ending, err := splitLineRegex(test.input)
-
-		if test.shouldError {
-			if err == nil {
-				t.Errorf("Expected error for input %q, but got none", test.input)
-			}
-			continue
+	// Test encryption errors
+	t.Run("Invalid yEnc block - no =ybegin", func(t *testing.T) {
+		_, err := cipher.Encrypt("=ypart begin=1 end=1024\ndata\n=yend size=1024", 1)
+		if err == nil {
+			t.Error("Should reject input not starting with =ybegin")
 		}
+	})
 
+	t.Run("Invalid yEnc block - no =yend", func(t *testing.T) {
+		_, err := cipher.Encrypt("=ybegin line=128 size=1024 name=test.txt\ndata", 1)
+		if err == nil {
+			t.Error("Should reject input not ending with =yend")
+		}
+	})
+
+	// Test decryption errors
+	t.Run("Decryption with wrong segment index", func(t *testing.T) {
+		encrypted, _ := cipher.Encrypt("=ybegin line=128 size=1024 name=test.txt\ndata\n=yend size=1024", 1)
+		_, err := cipher.Decrypt(encrypted, 2)
+		if err == nil {
+			t.Error("Should fail when decrypting with wrong segment index")
+		}
+	})
+
+	t.Run("Decryption of too short input", func(t *testing.T) {
+		_, err := cipher.Decrypt("short", 1)
+		if err == nil {
+			t.Error("Should reject input too short to contain salt")
+		}
+	})
+}
+
+// Test multiple cipher instances
+func TestMultipleCipherInstances(t *testing.T) {
+	// Create cipher for encryption
+	cipher1, err := NewCipher("testpassword")
+	if err != nil {
+		t.Fatalf("NewCipher 1 failed: %v", err)
+	}
+
+	input := "=ybegin line=128 size=1024 name=test.txt\ndata\n=yend size=1024"
+
+	// Encrypt with first cipher
+	encrypted1, err := cipher1.Encrypt(input, 1)
+	if err != nil {
+		t.Fatalf("Encryption with cipher1 failed: %v", err)
+	}
+
+	// Create a new cipher for decryption (realistic usage pattern)
+	cipher2, err := NewCipher("testpassword")
+	if err != nil {
+		t.Fatalf("NewCipher 2 failed: %v", err)
+	}
+
+	// Decrypt with second cipher (should work since same password)
+	decrypted, err := cipher2.Decrypt(encrypted1, 1)
+	if err != nil {
+		t.Fatalf("Decryption with cipher2 failed: %v", err)
+	}
+
+	expected := input + "\n"
+	if decrypted != expected {
+		t.Error("Cross-cipher decryption failed")
+	}
+}
+
+// generateBenchmarkInput creates a realistic yEnc block with 12,000 data lines
+// of 128 characters each (~1.5MB total size) for benchmarking.
+func generateBenchmarkInput() string {
+	const (
+		dataLines  = 12000
+		lineLength = 128
+		totalSize  = dataLines * lineLength
+	)
+
+	// Create the yEnc header
+	header := fmt.Sprintf("=ybegin line=%d size=%d name=benchmark_file.bin", lineLength, totalSize)
+
+	// Create the yEnc footer
+	footer := fmt.Sprintf("=yend size=%d crc32=12345678", totalSize)
+
+	// Pre-allocate slice for better performance
+	lines := make([]string, 0, dataLines+2)
+	lines = append(lines, header)
+
+	// Generate a repeating pattern for the data line
+	pattern := "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*()_+-=[]{}|;:,.<>? "
+
+	// Create a data line of exactly 128 characters
+	var dataLine string
+	for len(dataLine) < lineLength {
+		remaining := lineLength - len(dataLine)
+		if remaining >= len(pattern) {
+			dataLine += pattern
+		} else {
+			dataLine += pattern[:remaining]
+		}
+	}
+
+	// Generate 12,000 data lines
+	for i := 0; i < dataLines; i++ {
+		lines = append(lines, dataLine)
+	}
+
+	lines = append(lines, footer)
+
+	return strings.Join(lines, "\n")
+}
+
+// Benchmark tests
+func BenchmarkGenerateSalt(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		_, err := GenerateSalt()
 		if err != nil {
-			t.Errorf("Unexpected error for input %q: %v", test.input, err)
-			continue
-		}
-
-		if content != test.expectedContent {
-			t.Errorf("Wrong content for %q: expected %q, got %q", test.input, test.expectedContent, content)
-		}
-
-		if ending != test.expectedEnding {
-			t.Errorf("Wrong ending for %q: expected %q, got %q", test.input, test.expectedEnding, ending)
+			b.Fatal(err)
 		}
 	}
 }
 
-// TestDataLinesUnchanged tests that data lines are not modified during encryption/decryption
-func TestDataLinesUnchanged(t *testing.T) {
-	input := `=ybegin line=64 size=100 name=data_test.txt
-this is a data line that should not change
-another data line with special chars: !@#$%^&*()
-third data line with unicode: 你好世界
-=yend size=100`
+func BenchmarkNewCipher(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		_, err := NewCipher("testpassword")
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
 
-	encrypted, err := Encrypt(input, 1, "test_password")
+func BenchmarkCipherEncrypt(b *testing.B) {
+	cipher, err := NewCipher("testpassword")
 	if err != nil {
-		t.Fatalf("Encryption failed: %v", err)
+		b.Fatal(err)
 	}
 
-	inputLines := strings.Split(input, "\n")
-	encryptedLines := strings.Split(encrypted, "\n")
-
-	// Data lines (indices 1, 2, 3) should be unchanged
-	for i := 1; i < len(inputLines)-1; i++ {
-		if inputLines[i] != encryptedLines[i] {
-			t.Errorf("Data line %d was modified during encryption: original=%q, encrypted=%q",
-				i, inputLines[i], encryptedLines[i])
-		}
-	}
-}
-
-// TestEncryptionProperties tests that encrypted lines maintain proper format-preserving properties
-func TestEncryptionProperties(t *testing.T) {
-	// Create alphabet map for fast lookup
-	alphabetMap := make(map[byte]bool)
-	for _, b := range []byte(yEncAlphabet) {
-		alphabetMap[b] = true
-	}
-
-	for _, test := range testData {
-		t.Run(test.name, func(t *testing.T) {
-			encrypted, err := Encrypt(test.input, test.segment, test.password)
-			if err != nil {
-				t.Fatalf("Encryption failed: %v", err)
-			}
-
-			originalLines := strings.Split(test.input, "\n")
-			encryptedLines := strings.Split(encrypted, "\n")
-
-			if len(originalLines) != len(encryptedLines) {
-				t.Fatalf("Number of lines changed: original=%d, encrypted=%d", len(originalLines), len(encryptedLines))
-			}
-
-			for i, originalLine := range originalLines {
-				encryptedLine := encryptedLines[i]
-
-				// Only check yEnc control lines (lines starting with "=y")
-				if strings.HasPrefix(originalLine, "=y") {
-					// Split both lines to separate content from line endings
-					origContent, origEnding, err := splitLineRegex(originalLine)
-					if err != nil {
-						// Handle lines without line endings
-						if originalLine != "" {
-							origContent = originalLine
-							origEnding = ""
-						} else {
-							continue // Skip empty lines
-						}
-					}
-
-					encContent, encEnding, err := splitLineRegex(encryptedLine)
-					if err != nil {
-						// Handle lines without line endings
-						if encryptedLine != "" {
-							encContent = encryptedLine
-							encEnding = ""
-						} else {
-							continue // Skip empty lines
-						}
-					}
-
-					// Test 1: Line endings should be preserved
-					if origEnding != encEnding {
-						t.Errorf("Line %d ending changed: original=%q, encrypted=%q", i, origEnding, encEnding)
-					}
-
-					// Test 2: Content length should be preserved (format-preserving encryption)
-					if len(origContent) != len(encContent) {
-						t.Errorf("Line %d content length changed: original=%d bytes, encrypted=%d bytes",
-							i, len(origContent), len(encContent))
-					}
-
-					// Test 3: All bytes in encrypted content should be from the yEnc alphabet
-					for j, b := range []byte(encContent) {
-						if !alphabetMap[b] {
-							t.Errorf("Line %d position %d contains invalid byte 0x%02X (not in yEnc alphabet)", i, j, b)
-						}
-					}
-
-					// Test 4: Encrypted content should be different from original (unless very short)
-					if len(origContent) > 1 && origContent == encContent {
-						t.Errorf("Line %d was not encrypted (content unchanged): %q", i, origContent)
-					}
-				}
-			}
-		})
-	}
-}
-
-// Benchmark functions
-func BenchmarkEncrypt(b *testing.B) {
-	input := `=ybegin line=128 size=12345 name=benchmark.bin
-=ypart begin=1 end=5000
-benchmark data line 1
-benchmark data line 2
-benchmark data line 3
-=yend size=12345 crc32=abcd1234`
-	password := "benchmark_password"
-	segment := uint32(1)
+	// Generate realistic yEnc block with 12,000 data lines (~1.5MB)
+	input := generateBenchmarkInput()
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, err := Encrypt(input, segment, password)
+		_, err := cipher.Encrypt(input, 1)
 		if err != nil {
-			b.Fatalf("Encryption failed: %v", err)
+			b.Fatal(err)
 		}
 	}
 }
 
-func BenchmarkDecrypt(b *testing.B) {
-	input := `=ybegin line=128 size=12345 name=benchmark.bin
-=ypart begin=1 end=5000
-benchmark data line 1
-benchmark data line 2
-benchmark data line 3
-=yend size=12345 crc32=abcd1234`
-	password := "benchmark_password"
-	segment := uint32(1)
-
-	// Pre-encrypt the data
-	encrypted, err := Encrypt(input, segment, password)
+func BenchmarkCipherDecrypt(b *testing.B) {
+	cipher, err := NewCipher("testpassword")
 	if err != nil {
-		b.Fatalf("Pre-encryption failed: %v", err)
+		b.Fatal(err)
+	}
+
+	// Generate realistic yEnc block with 12,000 data lines (~1.5MB)
+	input := generateBenchmarkInput()
+	encrypted, err := cipher.Encrypt(input, 1)
+	if err != nil {
+		b.Fatal(err)
 	}
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, err := Decrypt(encrypted, segment, password)
+		_, err = cipher.Decrypt(encrypted, 1)
 		if err != nil {
-			b.Fatalf("Decryption failed: %v", err)
+			b.Fatal(err)
 		}
-	}
-}
-
-func BenchmarkEncryptDecryptRoundTrip(b *testing.B) {
-	input := `=ybegin line=128 size=12345 name=roundtrip.bin
-=ypart begin=1 end=5000
-roundtrip data line 1
-roundtrip data line 2
-=yend size=12345 crc32=abcd1234`
-	password := "roundtrip_password"
-	segment := uint32(1)
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		encrypted, err := Encrypt(input, segment, password)
-		if err != nil {
-			b.Fatalf("Encryption failed: %v", err)
-		}
-
-		_, err = Decrypt(encrypted, segment, password)
-		if err != nil {
-			b.Fatalf("Decryption failed: %v", err)
-		}
-	}
-}
-
-// Benchmark key derivation functions separately
-func BenchmarkKeyDerivation(b *testing.B) {
-	password := "benchmark_key_derivation"
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		salt := deriveSalt(password)
-		masterKey := deriveMasterKey(password, salt)
-		_ = deriveEncKey(masterKey)
-	}
-}
-
-func BenchmarkTweakGeneration(b *testing.B) {
-	password := "benchmark_tweak"
-	salt := deriveSalt(password)
-	masterKey := deriveMasterKey(password, salt)
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		_ = deriveTweak(masterKey, 1, uint32(i%100))
 	}
 }

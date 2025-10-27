@@ -1,0 +1,566 @@
+
+<!DOCTYPE html>
+<html>
+	<head>
+		<meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+		<title>go-yenc-header-encryption: Go Coverage Report</title>
+		<style>
+			body {
+				background: black;
+				color: rgb(80, 80, 80);
+			}
+			body, pre, #legend span {
+				font-family: Menlo, monospace;
+				font-weight: bold;
+			}
+			#topbar {
+				background: black;
+				position: fixed;
+				top: 0; left: 0; right: 0;
+				height: 42px;
+				border-bottom: 1px solid rgb(80, 80, 80);
+			}
+			#content {
+				margin-top: 50px;
+			}
+			#nav, #legend {
+				float: left;
+				margin-left: 10px;
+			}
+			#legend {
+				margin-top: 12px;
+			}
+			#nav {
+				margin-top: 10px;
+			}
+			#legend span {
+				margin: 0 5px;
+			}
+			.cov0 { color: rgb(192, 0, 0) }
+.cov1 { color: rgb(128, 128, 128) }
+.cov2 { color: rgb(116, 140, 131) }
+.cov3 { color: rgb(104, 152, 134) }
+.cov4 { color: rgb(92, 164, 137) }
+.cov5 { color: rgb(80, 176, 140) }
+.cov6 { color: rgb(68, 188, 143) }
+.cov7 { color: rgb(56, 200, 146) }
+.cov8 { color: rgb(44, 212, 149) }
+.cov9 { color: rgb(32, 224, 152) }
+.cov10 { color: rgb(20, 236, 155) }
+
+		</style>
+	</head>
+	<body>
+		<div id="topbar">
+			<div id="nav">
+				<select id="files">
+				
+				<option value="file0">github.com/Tensai75/go-yenc-header-encryption/yEncHeaderEnc.go (90.4%)</option>
+				
+				</select>
+			</div>
+			<div id="legend">
+				<span>not tracked</span>
+			
+				<span class="cov0">not covered</span>
+				<span class="cov8">covered</span>
+			
+			</div>
+		</div>
+		<div id="content">
+		
+		<pre class="file" id="file0" style="display: none">// This package implements the yEnc Control Lines Encryption Standard in Go.
+//
+// This is the reference implementation for encrypting and decrypting yEnc control lines
+// using FF1 format-preserving encryption with Argon2id key derivation. The implementation
+// ensures that encrypted yEnc control lines maintain the same byte length and use only
+// characters from the yEnc alphabet.
+//
+// For the complete yEnc Control Lines Encryption Standard specification, see:
+// https://github.com/Tensai75/yenc-encryption-standards
+//
+// Standard Usage:
+//
+//        plaintext := `=ybegin line=128 size=12345 name=file.bin
+//        data line 1
+//        data line 2
+//        =yend size=12345 crc32=abcd1234`
+//
+//        // Create cipher with password
+//        cipher, err := NewCipher("password")
+//        if err != nil {
+//                log.Fatal(err)
+//        }
+//
+//        // Encrypt yEnc control lines
+//        encrypted, err := cipher.Encrypt(plaintext, 1)
+//        if err != nil {
+//                log.Fatal(err)
+//        }
+//
+//        // Decrypt back to original
+//        decrypted, err := cipher.Decrypt(encrypted, 1)
+//        if err != nil {
+//                log.Fatal(err)
+//        }
+package yEncHeaderEnc
+
+import (
+        "crypto/hmac"
+        "crypto/rand"
+        "crypto/sha256"
+        "encoding/binary"
+        "errors"
+        "fmt"
+        "strings"
+        "sync"
+
+        "github.com/Tensai75/go-fpe-bytes/ff1"
+        "golang.org/x/crypto/argon2"
+)
+
+// yEncAlphabet defines the 253-character alphabet used for FF1 format-preserving encryption.
+//
+// This alphabet includes all byte values from 0x01 to 0xFF except:
+//   - 0x00 (null byte)
+//   - 0x0A (line feed, LF)
+//   - 0x0D (carriage return, CR)
+const yEncAlphabet = "\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0B\x0C\x0E\x0F" +
+        "\x10\x11\x12\x13\x14\x15\x16\x17\x18\x19\x1A\x1B\x1C\x1D\x1E\x1F" +
+        "\x20\x21\x22\x23\x24\x25\x26\x27\x28\x29\x2A\x2B\x2C\x2D\x2E\x2F" +
+        "\x30\x31\x32\x33\x34\x35\x36\x37\x38\x39\x3A\x3B\x3C\x3D\x3E\x3F" +
+        "\x40\x41\x42\x43\x44\x45\x46\x47\x48\x49\x4A\x4B\x4C\x4D\x4E\x4F" +
+        "\x50\x51\x52\x53\x54\x55\x56\x57\x58\x59\x5A\x5B\x5C\x5D\x5E\x5F" +
+        "\x60\x61\x62\x63\x64\x65\x66\x67\x68\x69\x6A\x6B\x6C\x6D\x6E\x6F" +
+        "\x70\x71\x72\x73\x74\x75\x76\x77\x78\x79\x7A\x7B\x7C\x7D\x7E\x7F" +
+        "\x80\x81\x82\x83\x84\x85\x86\x87\x88\x89\x8A\x8B\x8C\x8D\x8E\x8F" +
+        "\x90\x91\x92\x93\x94\x95\x96\x97\x98\x99\x9A\x9B\x9C\x9D\x9E\x9F" +
+        "\xA0\xA1\xA2\xA3\xA4\xA5\xA6\xA7\xA8\xA9\xAA\xAB\xAC\xAD\xAE\xAF" +
+        "\xB0\xB1\xB2\xB3\xB4\xB5\xB6\xB7\xB8\xB9\xBA\xBB\xBC\xBD\xBE\xBF" +
+        "\xC0\xC1\xC2\xC3\xC4\xC5\xC6\xC7\xC8\xC9\xCA\xCB\xCC\xCD\xCE\xCF" +
+        "\xD0\xD1\xD2\xD3\xD4\xD5\xD6\xD7\xD8\xD9\xDA\xDB\xDC\xDD\xDE\xDF" +
+        "\xE0\xE1\xE2\xE3\xE4\xE5\xE6\xE7\xE8\xE9\xEA\xEB\xEC\xED\xEE\xEF" +
+        "\xF0\xF1\xF2\xF3\xF4\xF5\xF6\xF7\xF8\xF9\xFA\xFB\xFC\xFD\xFE\xFF"
+
+// Alphabet returns the standard 253-character yEnc alphabet used for FF1 format-preserving encryption.
+// This alphabet excludes null (0x00), line feed (0x0A), and carriage return (0x0D) bytes
+// to ensure encrypted content remains compatible with yEnc protocol requirements.
+func Alphabet() []byte <span class="cov8" title="1">{
+        return []byte(yEncAlphabet)
+}</span>
+
+// GenerateSalt generates a cryptographically secure random 16-byte salt using values
+// from the yEnc alphabet as required by the standard.
+//
+// Returns:
+//   - []byte: 16-byte cryptographically secure random salt with values from yEnc alphabet
+//   - error: Error if the system's random number generator fails
+func GenerateSalt() ([]byte, error) <span class="cov8" title="1">{
+        alphabet := []byte(yEncAlphabet)
+        salt := make([]byte, 16)
+
+        // Generate 16 random bytes, each mapped to the yEnc alphabet
+        randomBytes := make([]byte, 16)
+        _, err := rand.Read(randomBytes)
+        if err != nil </span><span class="cov0" title="0">{
+                return nil, fmt.Errorf("failed to generate random bytes: %w", err)
+        }</span>
+
+        // Map each random byte to the yEnc alphabet (253 characters)
+        <span class="cov8" title="1">for i := 0; i &lt; 16; i++ </span><span class="cov8" title="1">{
+                salt[i] = alphabet[int(randomBytes[i])%len(alphabet)]
+        }</span>
+
+        <span class="cov8" title="1">return salt, nil</span>
+}
+
+// DeriveMasterKey derives a 32-byte master key using Argon2id with security parameters:
+// time=1, memory=64MB, threads=4. This provides strong password-based key derivation.
+func DeriveMasterKey(password string, salt []byte) []byte <span class="cov8" title="1">{
+        // Argon2id parameters - using standard values for high security
+        return argon2.IDKey([]byte(password), salt, 1, 64*1024, 4, 32)
+}</span>
+
+// DeriveEncKey derives the FF1 encryption key from the master key using
+// HMAC-SHA256 with the context string "yenc-control key".
+func DeriveEncKey(masterKey []byte) []byte <span class="cov8" title="1">{
+        mac := hmac.New(sha256.New, masterKey)
+        mac.Write([]byte("yenc-control key"))
+        return mac.Sum(nil)
+}</span>
+
+// DeriveTweak derives an 8-byte FF1 tweak using HMAC-SHA256 with the master key,
+// context string "yenc-control tweak", segment index, and line index. This ensures
+// different encryption for each control line position and yEnc segment.
+func DeriveTweak(masterKey []byte, segmentIndex, lineIndex uint32) []byte <span class="cov8" title="1">{
+        mac := hmac.New(sha256.New, masterKey)
+        mac.Write([]byte("yenc-control tweak"))
+
+        // Convert segmentIndex and lineIndex to bytes (big-endian)
+        segmentBytes := make([]byte, 4)
+        binary.BigEndian.PutUint32(segmentBytes, segmentIndex)
+        mac.Write(segmentBytes)
+
+        lineBytes := make([]byte, 4)
+        binary.BigEndian.PutUint32(lineBytes, lineIndex)
+        mac.Write(lineBytes)
+
+        hash := mac.Sum(nil)
+        return hash[:8] // Return first 8 bytes as tweak
+}</span>
+
+// Cipher represents a yEnc Control Lines Encryption cipher with precomputed keys.
+// It provides methods to encrypt and decrypt yEnc control lines using FF1
+// format-preserving encryption with Argon2id key derivation.
+//
+// A Cipher instance can be reused for multiple encrypt/decrypt operations
+// with the same password, avoiding the expensive key derivation process
+// on each operation.
+type Cipher struct {
+        password  string // Password used for key derivation
+        salt      []byte // Salt used for Argon2id key derivation
+        masterKey []byte // Master key derived from password using Argon2id
+        encKey    []byte // FF1 encryption key derived from master key
+        alphabet  []byte // yEnc alphabet for FF1 encryption
+        once      sync.Once
+}
+
+// NewCipher creates a new Cipher instance with keys derived from the provided password.
+// The password is processed using Argon2id with secure parameters (time=1, memory=64MB, threads=4)
+// and a domain-specific salt to derive the master key and encryption key.
+//
+// Parameters:
+//   - password: Password for key derivation using Argon2id
+//
+// Returns a Cipher instance ready for encrypt/decrypt operations, or an error if
+// key derivation fails.
+//
+// Example:
+//
+//        cipher, err := NewCipher("mypassword")
+//        if err != nil {
+//                return err
+//        }
+//
+//        // Encrypt multiple segments with the same cipher
+//        encrypted1, _ := cipher.Encrypt(yencBlock1, 1)
+//        encrypted2, _ := cipher.Encrypt(yencBlock2, 2)
+func NewCipher(password string) (*Cipher, error) <span class="cov8" title="1">{
+        if password == "" </span><span class="cov8" title="1">{
+                return nil, errors.New("password cannot be empty")
+        }</span>
+
+        <span class="cov8" title="1">return &amp;Cipher{
+                password: password,
+        }, nil</span>
+}
+
+func (c *Cipher) initialize(saltString string) error <span class="cov8" title="1">{
+
+        // Process salt
+        var salt []byte
+        var err error
+        if saltString == "" </span><span class="cov8" title="1">{
+                // Generate new random salt
+                salt, err = GenerateSalt()
+                if err != nil </span><span class="cov0" title="0">{
+                        return fmt.Errorf("failed to generate salt: %w", err)
+                }</span>
+        } else<span class="cov8" title="1"> {
+                salt = []byte(saltString)
+        }</span>
+        <span class="cov8" title="1">if len(salt) != 16 </span><span class="cov8" title="1">{
+                return fmt.Errorf("invalid salt length: expected 16 bytes, got %d", len(salt))
+        }</span>
+        // Store salt
+        <span class="cov8" title="1">c.salt = salt
+
+        // Derive masterKey
+        c.masterKey = DeriveMasterKey(c.password, salt)
+
+        // Derive encKey
+        c.encKey = DeriveEncKey(c.masterKey)
+
+        // Get yEnc alphabet
+        c.alphabet = Alphabet()
+
+        return nil</span>
+}
+
+// Encrypt encrypts yEnc control lines in the provided yEnc block using the cipher's
+// precomputed keys. This method processes a yEnc block and encrypts all yEnc control
+// lines (lines starting with "=y") while leaving data lines unchanged.
+//
+// The encryption is format-preserving, meaning encrypted control lines maintain the
+// same byte length as the original and contain only valid yEnc alphabet characters.
+//
+// Parameters:
+//   - plaintext: The complete yEnc block as a string, including control lines and data
+//   - segmentIndex: Segment number for multi-part yEnc files (affects encryption keys)
+//
+// The method uses FF1 format-preserving encryption with a 253-character yEnc alphabet
+// that excludes null bytes (0x00), line feed (0x0A), and carriage return (0x0D).
+// Each control line is encrypted with a unique tweak derived from the segment index
+// and line position, ensuring different encryption for identical control lines.
+//
+// Returns the encrypted yEnc block with encrypted control lines and unchanged data lines,
+// or an error if the input is invalid or encryption fails.
+//
+// Example:
+//
+//        cipher, _ := NewCipher("mypassword")
+//        input := `=ybegin line=128 size=1024 name=file.txt
+//        data content here
+//        =yend size=1024`
+//
+//        encrypted, err := cipher.Encrypt(input, 1)
+//        if err != nil {
+//                return err
+//        }
+func (c *Cipher) Encrypt(plaintext string, segmentIndex uint32) (string, error) <span class="cov8" title="1">{
+
+        // Ensure initialization is done only once
+        var err error
+        c.once.Do(func() </span><span class="cov8" title="1">{
+                err = c.initialize("")
+        }</span>)
+        <span class="cov8" title="1">if err != nil </span><span class="cov0" title="0">{
+                return "", err
+        }</span>
+
+        // Trim whitespace
+        <span class="cov8" title="1">plaintext = strings.TrimSpace(plaintext)
+
+        // Split the yEnc block into lines
+        lines := strings.Split(plaintext, "\n")
+
+        // Define the goroutine function to encrypt a single line
+        encryptLine := func(line string, lineIndex uint32) (string, error) </span><span class="cov8" title="1">{
+                var err error
+
+                // Derive tweak for this line
+                tweak := DeriveTweak(c.masterKey, segmentIndex, lineIndex)
+
+                // Create FF1 cipher with yEnc alphabet
+                cipher, err := ff1.NewCipherWithAlphabet(c.alphabet, 8, c.encKey, tweak)
+                if err != nil </span><span class="cov0" title="0">{
+                        return "", fmt.Errorf("failed to create FF1 cipher: %v", err)
+                }</span>
+
+                <span class="cov8" title="1">var encryptedContent []byte
+                var lineEnding string
+                if strings.HasSuffix(line, "\r") </span><span class="cov8" title="1">{
+                        lineEnding = "\r"
+                        encryptedContent, err = cipher.Encrypt([]byte(line[0 : len(line)-1]))
+                }</span> else<span class="cov8" title="1"> {
+                        lineEnding = ""
+                        encryptedContent, err = cipher.Encrypt([]byte(line))
+                }</span>
+                <span class="cov8" title="1">if err != nil </span><span class="cov0" title="0">{
+                        return "", fmt.Errorf("failed to encrypt line: %v", err)
+                }</span>
+
+                // Return the encrypted line with original line ending
+                <span class="cov8" title="1">return string(encryptedContent) + lineEnding, nil</span>
+        }
+
+        // Process lines from the beginning until we hit a non-yEnc control line
+        <span class="cov8" title="1">for i, line := range lines </span><span class="cov8" title="1">{
+                if strings.HasPrefix(line, "=y") </span><span class="cov8" title="1">{
+                        if i == 0 &amp;&amp; strings.HasPrefix(line, "=ybegin") == false </span><span class="cov8" title="1">{
+                                return "", fmt.Errorf("first line does not start with =ybegin")
+                        }</span>
+                        <span class="cov8" title="1">encryptedLine, err := encryptLine(line, uint32(i+1))
+                        if err != nil </span><span class="cov0" title="0">{
+                                return "", err
+                        }</span>
+                        <span class="cov8" title="1">if i == 0 </span><span class="cov8" title="1">{
+                                // Prepend salt to the first line
+                                lines[i] = string(c.salt) + encryptedLine
+                        }</span> else<span class="cov8" title="1"> {
+                                lines[i] = encryptedLine
+                        }</span>
+                } else<span class="cov8" title="1"> {
+                        // First non-header line reached, stop processing further lines
+                        break</span>
+                }
+        }
+
+        <span class="cov8" title="1">if !strings.HasPrefix(lines[len(lines)-1], "=yend") </span><span class="cov8" title="1">{
+                return "", fmt.Errorf("last line does not start with =yend")
+        }</span>
+        <span class="cov8" title="1">encryptedLine, err := encryptLine(lines[len(lines)-1], uint32(len(lines)))
+        if err != nil </span><span class="cov0" title="0">{
+                return "", err
+        }</span>
+        <span class="cov8" title="1">lines[len(lines)-1] = encryptedLine
+
+        // Join the encrypted lines back into a single string and return
+        return strings.Join(lines, "\n") + "\n", nil</span>
+}
+
+// Decrypt decrypts yEnc control lines that were encrypted using the Encrypt method.
+//
+// This method reverses the encryption process, decrypting yEnc control lines while
+// preserving the exact structure and data sections of the original yEnc block.
+// It uses the same cryptographic parameters and precomputed keys from the cipher
+// to ensure perfect round-trip compatibility.
+//
+// Parameters:
+//   - ciphertext: The encrypted yEnc block containing encrypted control lines
+//   - segmentIndex: Segment number used during encryption (must match exactly)
+//
+// The method processes the encrypted block sequentially, attempting to decrypt
+// each line and validating that decrypted control lines start with "=y" prefixes.
+// Lines that don't decrypt to valid yEnc control lines are treated as data lines
+// and left unchanged.
+//
+// Processing:
+//  1. Uses the same precomputed keys from the cipher instance
+//  2. Processes lines sequentially from beginning until non-control line found
+//  3. Validates each decrypted line starts with "=y" to confirm it's a control line
+//  4. Handles the =yend line separately with proper validation
+//  5. Preserves all line endings and data sections exactly
+//
+// The decryption is deterministic - the same ciphertext and segment index
+// will always produce the same plaintext result. Wrong parameters will either fail
+// with an error or produce invalid yEnc control lines.
+//
+// Returns the original plaintext yEnc block, or an error if decryption fails or
+// produces invalid control lines.
+//
+// Example:
+//
+//        cipher, _ := NewCipher("mypassword")
+//        // encrypted contains encrypted yEnc control lines
+//        decrypted, err := cipher.Decrypt(encrypted, 1)
+//        if err != nil {
+//                return err
+//        }
+//        // decrypted is identical to the original plaintext input
+func (c *Cipher) Decrypt(ciphertext string, segmentIndex uint32) (string, error) <span class="cov8" title="1">{
+
+        // Trim whitespace
+        ciphertext = strings.TrimSpace(ciphertext)
+
+        // Split the yEnc block into lines
+        lines := strings.Split(ciphertext, "\n")
+
+        // Define the function to decrypt a single line
+        decryptLine := func(line string, lineIndex uint32) (string, error) </span><span class="cov8" title="1">{
+                var err error
+
+                // If this is the first line, extract the salt
+                if lineIndex == 1 </span><span class="cov8" title="1">{
+                        if len(line) &lt; 16 </span><span class="cov8" title="1">{
+                                return "", fmt.Errorf("first line too short to contain salt")
+                        }</span>
+                        <span class="cov8" title="1">salt := line[:16]
+                        line = line[16:]
+
+                        // Ensure initialization is done only once
+                        c.once.Do(func() </span><span class="cov8" title="1">{
+                                err = c.initialize(salt)
+                        }</span>)
+                        <span class="cov8" title="1">if err != nil </span><span class="cov0" title="0">{
+                                return "", err
+                        }</span>
+                }
+
+                // Derive tweak for this line
+                <span class="cov8" title="1">tweak := DeriveTweak(c.masterKey, segmentIndex, lineIndex)
+
+                // Create FF1 cipher with yEnc alphabet
+                cipher, err := ff1.NewCipherWithAlphabet(c.alphabet, 8, c.encKey, tweak)
+                if err != nil </span><span class="cov0" title="0">{
+                        return "", fmt.Errorf("failed to create FF1 cipher: %v", err)
+                }</span>
+
+                <span class="cov8" title="1">var decryptedContent []byte
+                var lineEnding string
+                if strings.HasSuffix(line, "\r") </span><span class="cov8" title="1">{
+                        lineEnding = "\r"
+                        decryptedContent, err = cipher.Decrypt([]byte(line[0 : len(line)-1]))
+                }</span> else<span class="cov8" title="1"> {
+                        lineEnding = ""
+                        decryptedContent, err = cipher.Decrypt([]byte(line))
+                }</span>
+                <span class="cov8" title="1">if err != nil </span><span class="cov0" title="0">{
+                        return "", fmt.Errorf("failed to decrypt line: %v", err)
+                }</span>
+
+                // Return the decrypted line with original line ending
+                <span class="cov8" title="1">return string(decryptedContent) + lineEnding, nil</span>
+        }
+
+        // Process lines from the beginning linearly until we hit a non-yEnc control line
+        // but exclude the actual last line to handle it separately
+        <span class="cov8" title="1">for i, line := range lines </span><span class="cov8" title="1">{
+                decryptedLine, err := decryptLine(line, uint32(i+1))
+                if err != nil </span><span class="cov8" title="1">{
+                        return "", fmt.Errorf("error processing line %d: %v", i+1, err)
+                }</span>
+
+                // Check if the decrypted content starts with "=y"
+                <span class="cov8" title="1">if strings.HasPrefix(decryptedLine, "=y") </span><span class="cov8" title="1">{
+                        // For the first line, ensure it starts with =ybegin
+                        if i == 0 &amp;&amp; strings.HasPrefix(decryptedLine, "=ybegin") == false </span><span class="cov0" title="0">{
+                                return "", fmt.Errorf("decrypted first line does not start with =ybegin")
+                        }</span>
+                        // This is a yEnc control line, replace with decrypted version
+                        <span class="cov8" title="1">lines[i] = decryptedLine</span>
+                } else<span class="cov8" title="1"> {
+                        // This is the first data line, stop processing from beginning
+                        // lines[i] already contains the original content, no need to restore
+                        break</span>
+                }
+        }
+
+        // Now decrypt the last line (should be =yend)
+        <span class="cov8" title="1">decryptedLine, err := decryptLine(lines[len(lines)-1], uint32(len(lines)))
+        if err != nil </span><span class="cov0" title="0">{
+                return "", fmt.Errorf("error processing last line: %v", err)
+        }</span>
+
+        // Check if the decrypted content of the last line starts with "=yend"
+        <span class="cov8" title="1">if strings.HasPrefix(decryptedLine, "=yend") == false </span><span class="cov8" title="1">{
+                return "", fmt.Errorf("decrypted last line does not start with =yend")
+        }</span>
+        // Replace with decrypted version
+        <span class="cov8" title="1">lines[len(lines)-1] = decryptedLine
+
+        // Join the decrypted lines back into a single string
+        return strings.Join(lines, "\n") + "\n", nil</span>
+}
+</pre>
+		
+		</div>
+	</body>
+	<script>
+	(function() {
+		var files = document.getElementById('files');
+		var visible;
+		files.addEventListener('change', onChange, false);
+		function select(part) {
+			if (visible)
+				visible.style.display = 'none';
+			visible = document.getElementById(part);
+			if (!visible)
+				return;
+			files.value = part;
+			visible.style.display = 'block';
+			location.hash = part;
+		}
+		function onChange() {
+			select(files.value);
+			window.scrollTo(0, 0);
+		}
+		if (location.hash != "") {
+			select(location.hash.substr(1));
+		}
+		if (!visible) {
+			select("file0");
+		}
+	})();
+	</script>
+</html>
