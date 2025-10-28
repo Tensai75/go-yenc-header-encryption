@@ -216,7 +216,7 @@ func TestCipherInitialize(t *testing.T) {
 	}
 
 	// Test initialization with empty salt (should generate new salt)
-	err = cipher.initialize("")
+	err = cipher.Initialize("")
 	if err != nil {
 		t.Fatalf("Initialize with empty salt failed: %v", err)
 	}
@@ -242,7 +242,7 @@ func TestCipherInitialize(t *testing.T) {
 	// Test initialization with provided salt
 	cipher2, _ := NewCipher("testpassword")
 	testSalt := "1234567890123456"
-	err = cipher2.initialize(testSalt)
+	err = cipher2.Initialize(testSalt)
 	if err != nil {
 		t.Fatalf("Initialize with provided salt failed: %v", err)
 	}
@@ -253,9 +253,118 @@ func TestCipherInitialize(t *testing.T) {
 
 	// Test invalid salt length
 	cipher3, _ := NewCipher("testpassword")
-	err = cipher3.initialize("short")
+	err = cipher3.Initialize("short")
 	if err == nil {
 		t.Error("Initialize should reject invalid salt length")
+	}
+}
+
+// Test error handling for createCipher
+func TestCreateCipherErrors(t *testing.T) {
+	cipher, err := NewCipher("testpassword")
+	if err != nil {
+		t.Fatalf("NewCipher failed: %v", err)
+	}
+	// Uninitialized cipher (missing keys)
+	cipher.masterKey = nil
+	cipher.encKey = nil
+	cipher.alphabet = nil
+	_, err = cipher.createCipher(1, 1)
+	if err == nil {
+		t.Error("createCipher should fail with missing keys/alphabet")
+	}
+
+	// Invalid alphabet (empty)
+	cipher, _ = NewCipher("testpassword")
+	cipher.alphabet = []byte{}
+	cipher.masterKey = make([]byte, 32)
+	cipher.encKey = make([]byte, 32)
+	_, err = cipher.createCipher(1, 1)
+	if err == nil {
+		t.Error("createCipher should fail with empty alphabet")
+	}
+}
+
+// Test error handling for EncryptLine
+func TestEncryptLineErrors(t *testing.T) {
+	cipher, err := NewCipher("testpassword")
+	if err != nil {
+		t.Fatalf("NewCipher failed: %v", err)
+	}
+
+	// Invalid line (simulate FF1 cipher error)
+	cipher, _ = NewCipher("testpassword")
+	// Provide a line that is too short or malformed
+	_, err = cipher.EncryptLine("", 1, 1)
+	if err == nil {
+		t.Error("EncryptLine should fail with empty line input")
+	}
+}
+
+// Test error handling for DecryptLine
+func TestDecryptLineErrors(t *testing.T) {
+	cipher, err := NewCipher("testpassword")
+	if err != nil {
+		t.Fatalf("NewCipher failed: %v", err)
+	}
+
+	// Invalid line (too short for salt extraction)
+	cipher, _ = NewCipher("testpassword")
+	_, err = cipher.DecryptLine("short", 1, 1)
+	if err == nil {
+		t.Error("DecryptLine should fail with line too short for salt")
+	}
+
+	// Malformed line (simulate FF1 cipher error)
+	cipher, _ = NewCipher("testpassword")
+	// Provide a line that is empty or malformed
+	_, err = cipher.DecryptLine("", 1, 2)
+	if err == nil {
+		t.Error("DecryptLine should fail with empty line input")
+	}
+}
+
+// TestEncryptDecryptLineRoundTrip verifies that EncryptLine followed by
+// DecryptLine returns the original control line, preserving any trailing CR.
+func TestEncryptDecryptLineRoundTrip(t *testing.T) {
+	cipher, err := NewCipher("testpassword")
+	if err != nil {
+		t.Fatalf("NewCipher failed: %v", err)
+	}
+
+	// Initialize cipher so per-line operations have keys available
+	if err := cipher.Initialize(""); err != nil {
+		t.Fatalf("Initialize failed: %v", err)
+	}
+
+	cases := []struct {
+		name string
+		line string
+	}{
+		{name: "NoCR", line: "=ybegin line=128 size=1024 name=test.txt"},
+		{name: "WithCR", line: "=ybegin line=128 size=1024 name=test.txt\r"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			encrypted, err := cipher.EncryptLine(tc.line, 1, 1)
+			if err != nil {
+				t.Fatalf("EncryptLine failed: %v", err)
+			}
+
+			if encrypted == tc.line {
+				t.Error("EncryptLine did not change the input")
+			}
+
+			decrypted, err := cipher.DecryptLine(encrypted, 1, 1)
+			if err != nil {
+				t.Fatalf("DecryptLine failed: %v", err)
+			}
+
+			if decrypted != tc.line {
+				t.Errorf("Round-trip mismatch:\nGot:  %q\nWant: %q", decrypted, tc.line)
+			}
+		})
 	}
 }
 
@@ -321,6 +430,34 @@ func TestCipherEncryptDecrypt(t *testing.T) {
 				t.Errorf("Round-trip failed:\nOriginal: %q\nDecrypted: %q", expectedDecrypted, decrypted)
 			}
 		})
+	}
+}
+
+// Test Decrypt error for first line not starting with =ybegin
+func TestDecryptFirstLineNotYbegin(t *testing.T) {
+	cipher, err := NewCipher("testpassword")
+	if err != nil {
+		t.Fatalf("NewCipher failed: %v", err)
+	}
+	// Create a block with first line not starting with =ybegin
+	firstLine := `=yfoo line=128 size=12345 name=file.bin`
+	lastLine := `=yend size=12345 crc32=abcdef12`
+	cipher.Initialize("1234567890123456")
+	// Encrypt the line to get a valid encrypted block
+	eFirstLine, err := cipher.EncryptLine(firstLine, 1, 1)
+	if err != nil {
+		t.Fatalf("Encrypt failed: %v", err)
+	}
+	eLastLine, err := cipher.EncryptLine(lastLine, 1, 3)
+	if err != nil {
+		t.Fatalf("Encrypt failed: %v", err)
+	}
+	salt := cipher.salt
+	encrypted := string(salt) + eFirstLine + "\n" + "<data>" + "\n" + eLastLine
+	// Try to decrypt, should get error about first line
+	_, err = cipher.Decrypt(encrypted, 1)
+	if err == nil || !strings.Contains(err.Error(), "decrypted first line does not start with =ybegin") {
+		t.Errorf("Decrypt should fail with 'decrypted first line does not start with =ybegin' error, got: %v", err)
 	}
 }
 
@@ -535,6 +672,53 @@ func BenchmarkCipherDecrypt(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_, err = cipher.Decrypt(encrypted, 1)
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// BenchmarkEncryptLine measures the performance of EncryptLine for a single yEnc control line.
+func BenchmarkEncryptLine(b *testing.B) {
+	cipher, err := NewCipher("benchpassword")
+	if err != nil {
+		b.Fatal(err)
+	}
+	if err := cipher.Initialize(""); err != nil {
+		b.Fatal(err)
+	}
+
+	line := "=ybegin line=128 size=1024 name=bench.bin"
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, err := cipher.EncryptLine(line, 1, uint32(i+1))
+		if err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// BenchmarkDecryptLine measures the performance of DecryptLine for a single yEnc control line.
+func BenchmarkDecryptLine(b *testing.B) {
+	cipher, err := NewCipher("benchpassword")
+	if err != nil {
+		b.Fatal(err)
+	}
+	if err := cipher.Initialize(""); err != nil {
+		b.Fatal(err)
+	}
+
+	line := "=ybegin line=128 size=1024 name=bench.bin"
+	// Prepare an encrypted line to use in the benchmark
+	encrypted, err := cipher.EncryptLine(line, 1, 1)
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, err := cipher.DecryptLine(encrypted, 1, 1)
 		if err != nil {
 			b.Fatal(err)
 		}

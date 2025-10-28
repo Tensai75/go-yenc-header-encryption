@@ -152,6 +152,40 @@ Decrypts yEnc control lines that were encrypted using the Encrypt method.
 
 **Returns:** Original plaintext yEnc block.
 
+#### `(c *Cipher) Initialize(saltString string) error`
+
+Initializes the cipher by generating or processing the 16-byte salt, deriving the Argon2id master key and the FF1 encryption key. Call this when you want to perform per-line operations (`EncryptLine`/`DecryptLine`) without doing a full block Encrypt/Decrypt which extracts the salt automatically.
+
+**Parameters:**
+
+- `saltString`: Optional 16-byte salt string. If empty, a new random salt is generated.
+
+**Returns:** An error if the salt is invalid or key derivation fails.
+
+#### `(c *Cipher) EncryptLine(line string, segmentIndex, lineIndex uint32) (string, error)`
+
+Encrypts a single yEnc control line using FF1 format-preserving encryption. Preserves any trailing CR and returns the encrypted control line (does not prepend salt).
+
+**Parameters:**
+
+- `line`: The yEnc control line to encrypt (e.g., `=ybegin ...`)
+- `segmentIndex`: Segment number for multi-part files (affects key/tweak)
+- `lineIndex`: 1-based line index within the block (used to derive tweak)
+
+**Returns:** Encrypted control line or an error.
+
+#### `(c *Cipher) DecryptLine(line string, segmentIndex, lineIndex uint32) (string, error)`
+
+Decrypts a single yEnc control line previously encrypted with `EncryptLine`. Preserves trailing CR and returns the decrypted control line.
+
+**Parameters:**
+
+- `line`: The encrypted control line to decrypt
+- `segmentIndex`: Segment number used during encryption
+- `lineIndex`: 1-based line index used during encryption
+
+**Returns:** Decrypted control line or an error.
+
 ## Security
 
 ### Cryptographic Components
@@ -193,19 +227,22 @@ go test -bench=Benchmark -benchmem
 
 ### Test Coverage
 
-**Overall Coverage: 90.4%** - Run `go test -cover` to verify
+**Overall Coverage: 91.3%** - Run `go test -cover` to verify
 
-| Function                 | Coverage | Status                |
-| ------------------------ | -------- | --------------------- |
-| `Alphabet()`             | 100.0%   | ✅ Fully covered      |
-| `GenerateSalt()`         | 88.9%    | ✅ High coverage      |
-| `DeriveMasterKey()`      | 100.0%   | ✅ Fully covered      |
-| `DeriveEncKey()`         | 100.0%   | ✅ Fully covered      |
-| `DeriveTweak()`          | 100.0%   | ✅ Fully covered      |
-| `NewCipher()`            | 100.0%   | ✅ Fully covered      |
-| `(*Cipher).initialize()` | 92.9%    | ✅ Excellent coverage |
-| `(*Cipher).Encrypt()`    | 87.8%    | ✅ High coverage      |
-| `(*Cipher).Decrypt()`    | 88.4%    | ✅ High coverage      |
+| Function                   | Coverage | Status                |
+| -------------------------- | -------- | --------------------- |
+| `Alphabet()`               | 100.0%   | ✅ Fully covered      |
+| `GenerateSalt()`           | 88.9%    | ✅ High coverage      |
+| `DeriveMasterKey()`        | 100.0%   | ✅ Fully covered      |
+| `DeriveEncKey()`           | 100.0%   | ✅ Fully covered      |
+| `DeriveTweak()`            | 100.0%   | ✅ Fully covered      |
+| `NewCipher()`              | 100.0%   | ✅ Fully covered      |
+| `(*Cipher).Initialize()`   | 88.2%    | ✅ High coverage      |
+| `(*Cipher).EncryptLine()`  | 92.9%    | ✅ Excellent coverage |
+| `(*Cipher).Encrypt()`      | 87.0%    | ✅ High coverage      |
+| `(*Cipher).DecryptLine()`  | 92.9%    | ✅ Excellent coverage |
+| `(*Cipher).Decrypt()`      | 88.5%    | ✅ High coverage      |
+| `(*Cipher).createCipher()` | 100.0%   | ✅ Fully covered      |
 
 **Test Categories:**
 
@@ -220,18 +257,20 @@ go test -bench=Benchmark -benchmem
 - ✅ Salt generation and key derivation security
 - ✅ Benchmark tests with performance validation
 
-**Note:** The 9.6% uncovered code consists primarily of error handling paths for rare system-level failures (e.g., RNG failures, memory allocation errors) and defensive validation code. All security-critical functionality has complete test coverage.
+**Note:** The 8.7% uncovered code consists primarily of error handling paths for rare system-level failures (e.g., RNG failures, memory allocation errors) and defensive validation code. All security-critical functionality has complete test coverage.
 
 ## Performance
 
 Benchmark results on modern hardware (AMD Ryzen 7 5800X) with large yEnc files (~1.5MB, 12,000 data lines):
 
-| Benchmark     | Iterations    | Time/Op  | Memory/Op | Allocs/Op |
-| ------------- | ------------- | -------- | --------- | --------- |
-| GenerateSalt  | 10,986,676    | 109.2 ns | 16 B      | 1         |
-| NewCipher     | 1,000,000,000 | 0.2 ns   | 0 B       | 0         |
-| CipherEncrypt | 2,823         | 441.0 μs | 3.33 MB   | 175       |
-| CipherDecrypt | 2,661         | 445.8 μs | 3.31 MB   | 292       |
+| Benchmark    | Iterations    | Time/Op  | Memory/Op | Allocs/Op |
+| ------------ | ------------- | -------- | --------- | --------- |
+| GenerateSalt | 10,986,676    | 109.2 ns | 16 B      | 1         |
+| NewCipher    | 1,000,000,000 | 0.2 ns   | 0 B       | 0         |
+| Encrypt      | 2,823         | 441.0 μs | 3.33 MB   | 175       |
+| Decrypt      | 2,661         | 445.8 μs | 3.31 MB   | 292       |
+| EncryptLine  | 125,492       | 8.115 μs | 4,539 B   | 84        |
+| DecryptLine  | 126,086       | 8.002 μs | 4,522 B   | 84        |
 
 ### Performance Analysis
 
@@ -252,9 +291,16 @@ Benchmark results on modern hardware (AMD Ryzen 7 5800X) with large yEnc files (
   - Memory efficient: 175 allocations for large files
 
 - **Decryption**: ~446μs per 1.5MB file
+
   - Includes salt extraction and key derivation
   - Consistent performance with encryption
   - Reasonable memory overhead: 292 allocations
+
+- **Per-Line Encryption/Decryption**: ~8.1μs per control line
+
+  - EncryptLine: ~8.115μs/op (125,492 iters), ~4.54KB/op, 84 allocs/op
+  - DecryptLine: ~8.002μs/op (126,086 iters), ~4.52KB/op, 84 allocs/op
+  - Useful when doing many individual control-line operations (e.g., streaming or patching headers)
 
 ## Dependencies
 

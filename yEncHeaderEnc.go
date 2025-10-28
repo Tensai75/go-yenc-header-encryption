@@ -205,7 +205,16 @@ func NewCipher(password string) (*Cipher, error) {
 	}, nil
 }
 
-func (c *Cipher) initialize(saltString string) error {
+// Initialize initializes the Cipher by generating or processing the salt,
+// deriving the master key and encryption key. This method is intended to be
+// called before manual line encryption/decryption.
+//
+// Parameters:
+//   - saltString: Optional 16-byte salt string. If empty, a new random salt is generated.
+//
+// Returns:
+//   - error: Error if salt is invalid or key derivation fails
+func (c *Cipher) Initialize(saltString string) error {
 
 	// Process salt
 	var salt []byte
@@ -237,6 +246,65 @@ func (c *Cipher) initialize(saltString string) error {
 	return nil
 }
 
+// initializeOnce ensures the Cipher is initialized only once.
+//
+// Parameters:
+//   - saltString: Optional 16-byte salt string for initialization
+//
+// Returns:
+//   - error: Error if initialization fails
+func (c *Cipher) initializeOnce(saltString string) error {
+	var initErr error
+	c.once.Do(func() {
+		initErr = c.Initialize(saltString)
+	})
+	return initErr
+}
+
+// EncryptLine encrypts a single yEnc control line using FF1 format-preserving encryption.
+// This method preserves the original line ending and ensures the output uses only yEnc alphabet characters.
+//
+// Parameters:
+//   - line: The yEnc control line to encrypt (string)
+//   - segmentIndex: Segment number for multi-part yEnc files
+//   - lineIndex: Line position within the yEnc block
+//
+// Returns:
+//   - string: Encrypted yEnc control line with original line ending
+//   - error: Error if encryption fails or input is invalid
+//
+// Example:
+//
+//	encryptedLine, err := cipher.EncryptLine("=ybegin line=128 size=1024 name=file.txt", 1, 1)
+//	if err != nil {
+//	    return err
+//	}
+func (c *Cipher) EncryptLine(line string, segmentIndex, lineIndex uint32) (string, error) {
+	var err error
+
+	// Create FF1 cipher with yEnc alphabet
+	cipher, err := c.createCipher(segmentIndex, lineIndex)
+	if err != nil {
+		return "", err
+	}
+
+	var encryptedContent []byte
+	var lineEnding string
+	if strings.HasSuffix(line, "\r") {
+		lineEnding = "\r"
+		encryptedContent, err = cipher.Encrypt([]byte(line[0 : len(line)-1]))
+	} else {
+		lineEnding = ""
+		encryptedContent, err = cipher.Encrypt([]byte(line))
+	}
+	if err != nil {
+		return "", fmt.Errorf("failed to encrypt line: %v", err)
+	}
+
+	// Return the encrypted line with original line ending
+	return string(encryptedContent) + lineEnding, nil
+}
+
 // Encrypt encrypts yEnc control lines in the provided yEnc block using the cipher's
 // precomputed keys. This method processes a yEnc block and encrypts all yEnc control
 // lines (lines starting with "=y") while leaving data lines unchanged.
@@ -262,11 +330,8 @@ func (c *Cipher) initialize(saltString string) error {
 //	}
 func (c *Cipher) Encrypt(plaintext string, segmentIndex uint32) (string, error) {
 
-	// Ensure initialization is done only once
-	var err error
-	c.once.Do(func() {
-		err = c.initialize("")
-	})
+	// Initialize cipher (generate salt if not already initialized)
+	err := c.initializeOnce("")
 	if err != nil {
 		return "", err
 	}
@@ -277,43 +342,13 @@ func (c *Cipher) Encrypt(plaintext string, segmentIndex uint32) (string, error) 
 	// Split the yEnc block into lines
 	lines := strings.Split(plaintext, "\n")
 
-	// Define the goroutine function to encrypt a single line
-	encryptLine := func(line string, lineIndex uint32) (string, error) {
-		var err error
-
-		// Derive tweak for this line
-		tweak := DeriveTweak(c.masterKey, segmentIndex, lineIndex)
-
-		// Create FF1 cipher with yEnc alphabet
-		cipher, err := ff1.NewCipherWithAlphabet(c.alphabet, 8, c.encKey, tweak)
-		if err != nil {
-			return "", fmt.Errorf("failed to create FF1 cipher: %v", err)
-		}
-
-		var encryptedContent []byte
-		var lineEnding string
-		if strings.HasSuffix(line, "\r") {
-			lineEnding = "\r"
-			encryptedContent, err = cipher.Encrypt([]byte(line[0 : len(line)-1]))
-		} else {
-			lineEnding = ""
-			encryptedContent, err = cipher.Encrypt([]byte(line))
-		}
-		if err != nil {
-			return "", fmt.Errorf("failed to encrypt line: %v", err)
-		}
-
-		// Return the encrypted line with original line ending
-		return string(encryptedContent) + lineEnding, nil
-	}
-
 	// Process lines from the beginning until we hit a non-yEnc control line
 	for i, line := range lines {
 		if strings.HasPrefix(line, "=y") {
 			if i == 0 && strings.HasPrefix(line, "=ybegin") == false {
 				return "", fmt.Errorf("first line does not start with =ybegin")
 			}
-			encryptedLine, err := encryptLine(line, uint32(i+1))
+			encryptedLine, err := c.EncryptLine(line, segmentIndex, uint32(i+1))
 			if err != nil {
 				return "", err
 			}
@@ -332,7 +367,7 @@ func (c *Cipher) Encrypt(plaintext string, segmentIndex uint32) (string, error) 
 	if !strings.HasPrefix(lines[len(lines)-1], "=yend") {
 		return "", fmt.Errorf("last line does not start with =yend")
 	}
-	encryptedLine, err := encryptLine(lines[len(lines)-1], uint32(len(lines)))
+	encryptedLine, err := c.EncryptLine(lines[len(lines)-1], segmentIndex, uint32(len(lines)))
 	if err != nil {
 		return "", err
 	}
@@ -340,6 +375,50 @@ func (c *Cipher) Encrypt(plaintext string, segmentIndex uint32) (string, error) 
 
 	// Join the encrypted lines back into a single string and return
 	return strings.Join(lines, "\n") + "\n", nil
+}
+
+// DecryptLine decrypts a single yEnc control line using FF1 format-preserving encryption.
+// This method preserves the original line ending.
+//
+// Parameters:
+//   - line: The encrypted control line to decrypt (string)
+//   - segmentIndex: Segment number for multi-part yEnc files
+//   - lineIndex: Line position within the yEnc block
+//
+// Returns:
+//   - string: Decrypted yEnc control line with original line ending
+//   - error: Error if encryption fails or input is invalid
+//
+// Example:
+//
+//	decryptedLine, err := cipher.DecryptLine(<encryptedLine>, 1, 1)
+//	if err != nil {
+//	    return err
+//	}
+func (c *Cipher) DecryptLine(line string, segmentIndex, lineIndex uint32) (string, error) {
+	var err error
+
+	// Create FF1 cipher with yEnc alphabet
+	cipher, err := c.createCipher(segmentIndex, lineIndex)
+	if err != nil {
+		return "", err
+	}
+
+	var decryptedContent []byte
+	var lineEnding string
+	if strings.HasSuffix(line, "\r") {
+		lineEnding = "\r"
+		decryptedContent, err = cipher.Decrypt([]byte(line[0 : len(line)-1]))
+	} else {
+		lineEnding = ""
+		decryptedContent, err = cipher.Decrypt([]byte(line))
+	}
+	if err != nil {
+		return "", fmt.Errorf("failed to decrypt line: %v", err)
+	}
+
+	// Return the decrypted line with original line ending
+	return string(decryptedContent) + lineEnding, nil
 }
 
 // Decrypt decrypts yEnc control lines that were encrypted using the Encrypt method.
@@ -371,57 +450,27 @@ func (c *Cipher) Decrypt(ciphertext string, segmentIndex uint32) (string, error)
 	// Split the yEnc block into lines
 	lines := strings.Split(ciphertext, "\n")
 
-	// Define the function to decrypt a single line
-	decryptLine := func(line string, lineIndex uint32) (string, error) {
-		var err error
+	// Process lines from the beginning linearly until we hit a non-yEnc control line
+	// but exclude the actual last line to handle it separately
+	for i, line := range lines {
 
 		// If this is the first line, extract the salt
-		if lineIndex == 1 {
+		if i+1 == 1 {
 			if len(line) < 16 {
 				return "", fmt.Errorf("first line too short to contain salt")
 			}
 			salt := line[:16]
 			line = line[16:]
 
-			// Ensure initialization is done only once
-			c.once.Do(func() {
-				err = c.initialize(salt)
-			})
+			// Initialize cipher with extracted salt
+			err := c.initializeOnce(salt)
 			if err != nil {
 				return "", err
 			}
 		}
 
-		// Derive tweak for this line
-		tweak := DeriveTweak(c.masterKey, segmentIndex, lineIndex)
-
-		// Create FF1 cipher with yEnc alphabet
-		cipher, err := ff1.NewCipherWithAlphabet(c.alphabet, 8, c.encKey, tweak)
-		if err != nil {
-			return "", fmt.Errorf("failed to create FF1 cipher: %v", err)
-		}
-
-		var decryptedContent []byte
-		var lineEnding string
-		if strings.HasSuffix(line, "\r") {
-			lineEnding = "\r"
-			decryptedContent, err = cipher.Decrypt([]byte(line[0 : len(line)-1]))
-		} else {
-			lineEnding = ""
-			decryptedContent, err = cipher.Decrypt([]byte(line))
-		}
-		if err != nil {
-			return "", fmt.Errorf("failed to decrypt line: %v", err)
-		}
-
-		// Return the decrypted line with original line ending
-		return string(decryptedContent) + lineEnding, nil
-	}
-
-	// Process lines from the beginning linearly until we hit a non-yEnc control line
-	// but exclude the actual last line to handle it separately
-	for i, line := range lines {
-		decryptedLine, err := decryptLine(line, uint32(i+1))
+		// Decrypt the line
+		decryptedLine, err := c.DecryptLine(line, segmentIndex, uint32(i+1))
 		if err != nil {
 			return "", fmt.Errorf("error processing line %d: %v", i+1, err)
 		}
@@ -442,7 +491,7 @@ func (c *Cipher) Decrypt(ciphertext string, segmentIndex uint32) (string, error)
 	}
 
 	// Now decrypt the last line (should be =yend)
-	decryptedLine, err := decryptLine(lines[len(lines)-1], uint32(len(lines)))
+	decryptedLine, err := c.DecryptLine(lines[len(lines)-1], segmentIndex, uint32(len(lines)))
 	if err != nil {
 		return "", fmt.Errorf("error processing last line: %v", err)
 	}
@@ -456,4 +505,18 @@ func (c *Cipher) Decrypt(ciphertext string, segmentIndex uint32) (string, error)
 
 	// Join the decrypted lines back into a single string
 	return strings.Join(lines, "\n") + "\n", nil
+}
+
+func (c *Cipher) createCipher(segmentIndex, lineIndex uint32) (ff1.Cipher, error) {
+
+	// Derive tweak for this line
+	tweak := DeriveTweak(c.masterKey, segmentIndex, lineIndex)
+
+	// Create FF1 cipher with yEnc alphabet
+	cipher, err := ff1.NewCipherWithAlphabet(c.alphabet, 8, c.encKey, tweak)
+	if err != nil {
+		return ff1.Cipher{}, fmt.Errorf("failed to create FF1 cipher: %v", err)
+	}
+
+	return cipher, nil
 }
