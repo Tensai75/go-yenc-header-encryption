@@ -368,6 +368,216 @@ func TestEncryptDecryptLineRoundTrip(t *testing.T) {
 	}
 }
 
+// TestEncryptLineWithSalt verifies EncryptLineWithSalt handles salt prepending correctly
+func TestEncryptLineWithSalt(t *testing.T) {
+	cipher, err := NewCipher("testpassword")
+	if err != nil {
+		t.Fatalf("NewCipher failed: %v", err)
+	}
+
+	testLine := "=ybegin line=128 size=1024 name=test.txt"
+
+	cases := []struct {
+		name       string
+		line       string
+		lineIndex  uint32
+		expectSalt bool
+	}{
+		{name: "FirstLine", line: testLine, lineIndex: 1, expectSalt: true},
+		{name: "FirstLineWithCR", line: testLine + "\r", lineIndex: 1, expectSalt: true},
+		{name: "SecondLine", line: "=ypart begin=1 end=1024", lineIndex: 2, expectSalt: false},
+		{name: "LastLine", line: "=yend size=1024 crc32=12345678", lineIndex: 3, expectSalt: false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			encrypted, err := cipher.EncryptLineWithSalt(tc.line, 1, tc.lineIndex)
+			if err != nil {
+				t.Fatalf("EncryptLineWithSalt failed: %v", err)
+			}
+
+			if encrypted == tc.line {
+				t.Error("EncryptLineWithSalt did not change the input")
+			}
+
+			if tc.expectSalt {
+				// First line should have salt prepended (16 bytes)
+				if len(encrypted) < len(tc.line)+16 {
+					t.Error("First line should be longer due to salt prepending")
+				}
+				// Verify salt is present at the beginning
+				if len(cipher.salt) != 16 {
+					t.Errorf("Expected salt length 16, got %d", len(cipher.salt))
+				}
+				if !strings.HasPrefix(encrypted, string(cipher.salt)) {
+					t.Error("First line should start with salt")
+				}
+			} else {
+				// Non-first lines should not have salt prepended
+				if len(encrypted) > len(tc.line)+20 { // Allow some encryption overhead
+					t.Error("Non-first line should not have salt prepended")
+				}
+			}
+		})
+	}
+}
+
+// TestDecryptLineWithSalt verifies DecryptLineWithSalt handles salt extraction correctly
+func TestDecryptLineWithSalt(t *testing.T) {
+	cipher, err := NewCipher("testpassword")
+	if err != nil {
+		t.Fatalf("NewCipher failed: %v", err)
+	}
+
+	testLine := "=ybegin line=128 size=1024 name=test.txt"
+
+	// First encrypt lines with salt to get test data
+	encryptedFirstLine, err := cipher.EncryptLineWithSalt(testLine, 1, 1)
+	if err != nil {
+		t.Fatalf("EncryptLineWithSalt failed: %v", err)
+	}
+
+	encryptedSecondLine, err := cipher.EncryptLineWithSalt("=ypart begin=1 end=1024", 1, 2)
+	if err != nil {
+		t.Fatalf("EncryptLineWithSalt failed: %v", err)
+	}
+
+	cases := []struct {
+		name              string
+		line              string
+		originalLine      string
+		lineIndex         uint32
+		shouldExtractSalt bool
+	}{
+		{name: "FirstLine", line: encryptedFirstLine, originalLine: testLine, lineIndex: 1, shouldExtractSalt: true},
+		{name: "SecondLine", line: encryptedSecondLine, originalLine: "=ypart begin=1 end=1024", lineIndex: 2, shouldExtractSalt: false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Create a new cipher for decryption to test salt extraction
+			cipher2, err := NewCipher("testpassword")
+			if err != nil {
+				t.Fatalf("NewCipher failed: %v", err)
+			}
+
+			// For non-first lines, we need to initialize the cipher first
+			if !tc.shouldExtractSalt {
+				// Use the same salt as the original cipher for consistency
+				err = cipher2.Initialize(string(cipher.salt))
+				if err != nil {
+					t.Fatalf("Initialize failed: %v", err)
+				}
+			}
+
+			decrypted, err := cipher2.DecryptLineWithSalt(tc.line, 1, tc.lineIndex)
+			if err != nil {
+				t.Fatalf("DecryptLineWithSalt failed: %v", err)
+			}
+
+			if decrypted != tc.originalLine {
+				t.Errorf("Decryption mismatch:\nGot:  %q\nWant: %q", decrypted, tc.originalLine)
+			}
+
+			if tc.shouldExtractSalt {
+				// Verify that salt was extracted and cipher initialized
+				if len(cipher2.salt) != 16 {
+					t.Errorf("Expected salt length 16, got %d", len(cipher2.salt))
+				}
+				if cipher2.masterKey == nil {
+					t.Error("Master key should be set after salt extraction")
+				}
+			}
+		})
+	}
+}
+
+// TestEncryptDecryptLineWithSaltRoundTrip verifies full round-trip with salt functions
+func TestEncryptDecryptLineWithSaltRoundTrip(t *testing.T) {
+	cipher, err := NewCipher("testpassword")
+	if err != nil {
+		t.Fatalf("NewCipher failed: %v", err)
+	}
+
+	cases := []struct {
+		name      string
+		line      string
+		lineIndex uint32
+	}{
+		{name: "FirstLineNoCR", line: "=ybegin line=128 size=1024 name=test.txt", lineIndex: 1},
+		{name: "FirstLineWithCR", line: "=ybegin line=128 size=1024 name=test.txt\r", lineIndex: 1},
+		{name: "PartLine", line: "=ypart begin=1 end=1024", lineIndex: 2},
+		{name: "EndLine", line: "=yend size=1024 crc32=12345678", lineIndex: 3},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Encrypt with salt handling
+			encrypted, err := cipher.EncryptLineWithSalt(tc.line, 1, tc.lineIndex)
+			if err != nil {
+				t.Fatalf("EncryptLineWithSalt failed: %v", err)
+			}
+
+			// Create new cipher for decryption
+			cipher2, err := NewCipher("testpassword")
+			if err != nil {
+				t.Fatalf("NewCipher failed: %v", err)
+			}
+
+			// For non-first lines, initialize with the same salt
+			if tc.lineIndex != 1 {
+				err = cipher2.Initialize(string(cipher.salt))
+				if err != nil {
+					t.Fatalf("Initialize failed: %v", err)
+				}
+			}
+
+			// Decrypt with salt handling
+			decrypted, err := cipher2.DecryptLineWithSalt(encrypted, 1, tc.lineIndex)
+			if err != nil {
+				t.Fatalf("DecryptLineWithSalt failed: %v", err)
+			}
+
+			if decrypted != tc.line {
+				t.Errorf("Round-trip mismatch:\nGot:  %q\nWant: %q", decrypted, tc.line)
+			}
+		})
+	}
+}
+
+// TestDecryptLineWithSaltErrors tests error conditions for DecryptLineWithSalt
+func TestDecryptLineWithSaltErrors(t *testing.T) {
+	cipher, err := NewCipher("testpassword")
+	if err != nil {
+		t.Fatalf("NewCipher failed: %v", err)
+	}
+
+	// Test first line too short for salt
+	_, err = cipher.DecryptLineWithSalt("short", 1, 1)
+	if err == nil {
+		t.Error("DecryptLineWithSalt should fail with line too short for salt")
+	}
+	if !strings.Contains(err.Error(), "first line too short to contain salt") {
+		t.Errorf("Expected 'first line too short to contain salt' error, got: %v", err)
+	}
+
+	// Test empty line
+	_, err = cipher.DecryptLineWithSalt("", 1, 1)
+	if err == nil {
+		t.Error("DecryptLineWithSalt should fail with empty line")
+	}
+
+	// Test malformed encrypted line (after salt extraction)
+	// Create a line with valid salt but invalid encrypted content that will cause FF1 to fail
+	cipher2, _ := NewCipher("testpassword")
+	validSalt := "1234567890123456"                // 16 bytes
+	invalidEncrypted := validSalt + "\x00\x0A\x0D" // Characters not in yEnc alphabet
+	_, err = cipher2.DecryptLineWithSalt(invalidEncrypted, 1, 1)
+	if err == nil {
+		t.Error("DecryptLineWithSalt should fail with malformed encrypted content")
+	}
+}
+
 // Test basic encryption and decryption functionality
 func TestCipherEncryptDecrypt(t *testing.T) {
 	cipher, err := NewCipher("testpassword")

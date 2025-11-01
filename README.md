@@ -164,7 +164,9 @@ Initializes the cipher by generating or processing the 16-byte salt, deriving th
 
 #### `(c *Cipher) EncryptLine(line string, segmentIndex, lineIndex uint32) (string, error)`
 
-Encrypts a single yEnc control line using FF1 format-preserving encryption. Preserves any trailing CR and returns the encrypted control line (does not prepend salt).
+Encrypts a single yEnc control line using FF1 format-preserving encryption. Preserves any trailing CR and returns the encrypted control line.
+
+**⚠️ CAUTION:** This method expects the cipher to be pre-initialized via `Initialize()` and does **not** handle salt prepending. For automatic salt handling, use `EncryptLineWithSalt()` instead.
 
 **Parameters:**
 
@@ -178,11 +180,37 @@ Encrypts a single yEnc control line using FF1 format-preserving encryption. Pres
 
 Decrypts a single yEnc control line previously encrypted with `EncryptLine`. Preserves trailing CR and returns the decrypted control line.
 
+**⚠️ CAUTION:** This method expects the cipher to be pre-initialized via `Initialize()` and does **not** handle salt extraction. For automatic salt handling, use `DecryptLineWithSalt()` instead.
+
 **Parameters:**
 
 - `line`: The encrypted control line to decrypt
 - `segmentIndex`: Segment number used during encryption
 - `lineIndex`: 1-based line index used during encryption
+
+**Returns:** Decrypted control line or an error.
+
+#### `(c *Cipher) EncryptLineWithSalt(line string, segmentIndex, lineIndex uint32) (string, error)`
+
+Encrypts a single yEnc control line and automatically handles salt prepending for the first line. This convenience method combines encryption with salt management, automatically initializing the cipher if needed and prepending the salt to line 1.
+
+**Parameters:**
+
+- `line`: The yEnc control line to encrypt
+- `segmentIndex`: Segment number for multi-part files
+- `lineIndex`: 1-based line index (salt prepended when lineIndex=1)
+
+**Returns:** Encrypted control line with salt prepended if first line, or error.
+
+#### `(c *Cipher) DecryptLineWithSalt(line string, segmentIndex, lineIndex uint32) (string, error)`
+
+Decrypts a single yEnc control line and automatically handles salt extraction from the first line. This convenience method combines decryption with salt management, automatically extracting the salt from line 1 and initializing the cipher.
+
+**Parameters:**
+
+- `line`: The encrypted control line (with salt if lineIndex=1)
+- `segmentIndex`: Segment number used during encryption
+- `lineIndex`: 1-based line index (salt extracted when lineIndex=1)
 
 **Returns:** Decrypted control line or an error.
 
@@ -227,22 +255,24 @@ go test -bench=Benchmark -benchmem
 
 ### Test Coverage
 
-**Overall Coverage: 91.3%** - Run `go test -cover` to verify
+**Overall Coverage: 91.9%** - Run `go test -cover` to verify
 
-| Function                   | Coverage | Status                |
-| -------------------------- | -------- | --------------------- |
-| `Alphabet()`               | 100.0%   | ✅ Fully covered      |
-| `GenerateSalt()`           | 88.9%    | ✅ High coverage      |
-| `DeriveMasterKey()`        | 100.0%   | ✅ Fully covered      |
-| `DeriveEncKey()`           | 100.0%   | ✅ Fully covered      |
-| `DeriveTweak()`            | 100.0%   | ✅ Fully covered      |
-| `NewCipher()`              | 100.0%   | ✅ Fully covered      |
-| `(*Cipher).Initialize()`   | 88.2%    | ✅ High coverage      |
-| `(*Cipher).EncryptLine()`  | 92.9%    | ✅ Excellent coverage |
-| `(*Cipher).Encrypt()`      | 87.0%    | ✅ High coverage      |
-| `(*Cipher).DecryptLine()`  | 92.9%    | ✅ Excellent coverage |
-| `(*Cipher).Decrypt()`      | 88.5%    | ✅ High coverage      |
-| `(*Cipher).createCipher()` | 100.0%   | ✅ Fully covered      |
+| Function                          | Coverage | Status                |
+| --------------------------------- | -------- | --------------------- |
+| `Alphabet()`                      | 100.0%   | ✅ Fully covered      |
+| `GenerateSalt()`                  | 88.9%    | ✅ High coverage      |
+| `DeriveMasterKey()`               | 100.0%   | ✅ Fully covered      |
+| `DeriveEncKey()`                  | 100.0%   | ✅ Fully covered      |
+| `DeriveTweak()`                   | 100.0%   | ✅ Fully covered      |
+| `NewCipher()`                     | 100.0%   | ✅ Fully covered      |
+| `(*Cipher).Initialize()`          | 92.9%    | ✅ Excellent coverage |
+| `(*Cipher).EncryptLine()`         | 92.9%    | ✅ Excellent coverage |
+| `(*Cipher).EncryptLineWithSalt()` | 77.8%    | ✅ Good coverage      |
+| `(*Cipher).Encrypt()`             | 87.0%    | ✅ High coverage      |
+| `(*Cipher).DecryptLine()`         | 100.0%   | ✅ Fully covered      |
+| `(*Cipher).DecryptLineWithSalt()` | 91.7%    | ✅ Excellent coverage |
+| `(*Cipher).Decrypt()`             | 88.5%    | ✅ High coverage      |
+| `(*Cipher).createCipher()`        | 100.0%   | ✅ Fully covered      |
 
 **Test Categories:**
 
@@ -257,7 +287,7 @@ go test -bench=Benchmark -benchmem
 - ✅ Salt generation and key derivation security
 - ✅ Benchmark tests with performance validation
 
-**Note:** The 8.7% uncovered code consists primarily of error handling paths for rare system-level failures (e.g., RNG failures, memory allocation errors) and defensive validation code. All security-critical functionality has complete test coverage.
+**Note:** The 8.1% uncovered code consists primarily of error handling paths for rare system-level failures (e.g., RNG failures, memory allocation errors) and defensive validation code. All security-critical functionality has complete test coverage.
 
 ## Performance
 

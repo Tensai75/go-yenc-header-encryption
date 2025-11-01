@@ -263,6 +263,8 @@ func (c *Cipher) initializeOnce(saltString string) error {
 
 // EncryptLine encrypts a single yEnc control line using FF1 format-preserving encryption.
 // This method preserves the original line ending and ensures the output uses only yEnc alphabet characters.
+// CAUTION: This methode expects that the cipher has already been initialized via Initialize or initializeOnce.
+// CAUTION: This methode will not add salt to the first line; use EncryptLineWithSalt for that purpose.
 //
 // Parameters:
 //   - line: The yEnc control line to encrypt (string)
@@ -305,6 +307,47 @@ func (c *Cipher) EncryptLine(line string, segmentIndex, lineIndex uint32) (strin
 	return string(encryptedContent) + lineEnding, nil
 }
 
+// EncryptLineWithSalt encrypts a single yEnc control line and prepends the salt to the first line.
+// This method automatically initializes the cipher if needed and handles salt prepending for line 1.
+// Use this when you need both encryption and salt handling for individual control lines.
+//
+// Parameters:
+//   - line: The yEnc control line to encrypt (string)
+//   - segmentIndex: Segment number for multi-part yEnc files
+//   - lineIndex: Line position within the yEnc block (1-based, salt prepended when lineIndex=1)
+//
+// Returns:
+//   - string: Encrypted yEnc control line, with salt prepended if lineIndex=1
+//   - error: Error if encryption fails or input is invalid
+//
+// Example:
+//
+//	// Encrypt first line with automatic salt prepending
+//	encryptedFirstLine, err := cipher.EncryptLineWithSalt("=ybegin line=128 size=1024 name=file.txt", 1, 1)
+//	if err != nil {
+//	    return err
+//	}
+func (c *Cipher) EncryptLineWithSalt(line string, segmentIndex, lineIndex uint32) (string, error) {
+
+	// Ensure cipher is initialized
+	err := c.initializeOnce("")
+	if err != nil {
+		return "", err
+	}
+
+	// Encrypt the line
+	encryptedLine, err := c.EncryptLine(line, segmentIndex, lineIndex)
+	if err != nil {
+		return "", fmt.Errorf("error processing line %d: %v", lineIndex, err)
+	}
+
+	if lineIndex == 1 {
+		// Prepend salt to the encrypted line
+		return string(c.salt) + encryptedLine, nil
+	}
+	return encryptedLine, nil
+}
+
 // Encrypt encrypts yEnc control lines in the provided yEnc block using the cipher's
 // precomputed keys. This method processes a yEnc block and encrypts all yEnc control
 // lines (lines starting with "=y") while leaving data lines unchanged.
@@ -345,7 +388,7 @@ func (c *Cipher) Encrypt(plaintext string, segmentIndex uint32) (string, error) 
 	// Process lines from the beginning until we hit a non-yEnc control line
 	for i, line := range lines {
 		if strings.HasPrefix(line, "=y") {
-			if i == 0 && strings.HasPrefix(line, "=ybegin") == false {
+			if i == 0 && !strings.HasPrefix(line, "=ybegin") {
 				return "", fmt.Errorf("first line does not start with =ybegin")
 			}
 			encryptedLine, err := c.EncryptLine(line, segmentIndex, uint32(i+1))
@@ -379,6 +422,8 @@ func (c *Cipher) Encrypt(plaintext string, segmentIndex uint32) (string, error) 
 
 // DecryptLine decrypts a single yEnc control line using FF1 format-preserving encryption.
 // This method preserves the original line ending.
+// CAUTION: This methode expects that the cipher has already been initialized via Initialize or initializeOnce.
+// CAUTION: This methode will not extract the salt from the first line; use DecryptLineWithSalt for that purpose.
 //
 // Parameters:
 //   - line: The encrypted control line to decrypt (string)
@@ -419,6 +464,51 @@ func (c *Cipher) DecryptLine(line string, segmentIndex, lineIndex uint32) (strin
 
 	// Return the decrypted line with original line ending
 	return string(decryptedContent) + lineEnding, nil
+}
+
+// DecryptLineWithSalt decrypts a single yEnc control line and extracts the salt from the first line.
+// This method automatically handles salt extraction from line 1 and cipher initialization.
+// Use this when you need both salt handling and decryption for individual control lines.
+//
+// Parameters:
+//   - line: The encrypted control line to decrypt (with salt if lineIndex=1)
+//   - segmentIndex: Segment number for multi-part yEnc files
+//   - lineIndex: Line position within the yEnc block (1-based, salt extracted when lineIndex=1)
+//
+// Returns:
+//   - string: Decrypted yEnc control line with original line ending
+//   - error: Error if decryption fails or input is invalid
+//
+// Example:
+//
+//	// Decrypt first line with automatic salt extraction
+//	decryptedFirstLine, err := cipher.DecryptLineWithSalt(encryptedFirstLine, 1, 1)
+//	if err != nil {
+//	    return err
+//	}
+func (c *Cipher) DecryptLineWithSalt(line string, segmentIndex, lineIndex uint32) (string, error) {
+	if lineIndex == 1 {
+		if len(line) < 16 {
+			return "", fmt.Errorf("first line too short to contain salt")
+		}
+		salt := line[:16]
+		line = line[16:]
+
+		// Initialize cipher with extracted salt
+		err := c.initializeOnce(salt)
+		if err != nil {
+			return "", err
+		}
+	}
+
+	// Decrypt the line
+	decryptedLine, err := c.DecryptLine(line, segmentIndex, lineIndex)
+	if err != nil {
+		return "", fmt.Errorf("error processing line %d: %v", lineIndex, err)
+	}
+
+	// Return the decrypted line
+	return decryptedLine, nil
 }
 
 // Decrypt decrypts yEnc control lines that were encrypted using the Encrypt method.
@@ -478,7 +568,7 @@ func (c *Cipher) Decrypt(ciphertext string, segmentIndex uint32) (string, error)
 		// Check if the decrypted content starts with "=y"
 		if strings.HasPrefix(decryptedLine, "=y") {
 			// For the first line, ensure it starts with =ybegin
-			if i == 0 && strings.HasPrefix(decryptedLine, "=ybegin") == false {
+			if i == 0 && !strings.HasPrefix(decryptedLine, "=ybegin") {
 				return "", fmt.Errorf("decrypted first line does not start with =ybegin")
 			}
 			// This is a yEnc control line, replace with decrypted version
@@ -497,7 +587,7 @@ func (c *Cipher) Decrypt(ciphertext string, segmentIndex uint32) (string, error)
 	}
 
 	// Check if the decrypted content of the last line starts with "=yend"
-	if strings.HasPrefix(decryptedLine, "=yend") == false {
+	if !strings.HasPrefix(decryptedLine, "=yend") {
 		return "", fmt.Errorf("decrypted last line does not start with =yend")
 	}
 	// Replace with decrypted version
