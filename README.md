@@ -214,6 +214,21 @@ Decrypts a single yEnc control line and automatically handles salt extraction fr
 
 **Returns:** Decrypted control line or an error.
 
+#### `(c *Cipher) Salt() []byte`
+
+Returns the current salt used by the cipher for key derivation. This method provides access to the salt that was either generated during initialization or extracted during decryption operations.
+
+**Returns:** 16-byte salt used for Argon2id key derivation, or nil if cipher is not initialized.
+
+**Example:**
+
+```go
+cipher, _ := NewCipher("password")
+cipher.Initialize("")  // Generate new salt
+salt := cipher.Salt()
+fmt.Printf("Salt: %x", salt)
+```
+
 ## Security
 
 ### Cryptographic Components
@@ -266,6 +281,7 @@ go test -bench=Benchmark -benchmem
 | `DeriveTweak()`                   | 100.0%   | ✅ Fully covered      |
 | `NewCipher()`                     | 100.0%   | ✅ Fully covered      |
 | `(*Cipher).Initialize()`          | 92.9%    | ✅ Excellent coverage |
+| `(*Cipher).Salt()`                | 100.0%   | ✅ Fully covered      |
 | `(*Cipher).EncryptLine()`         | 92.9%    | ✅ Excellent coverage |
 | `(*Cipher).EncryptLineWithSalt()` | 77.8%    | ✅ Good coverage      |
 | `(*Cipher).Encrypt()`             | 87.0%    | ✅ High coverage      |
@@ -285,6 +301,7 @@ go test -bench=Benchmark -benchmem
 - ✅ Line ending preservation (LF and CRLF)
 - ✅ yEnc alphabet compliance verification
 - ✅ Salt generation and key derivation security
+- ✅ Salt access and state validation with Salt() method
 - ✅ Benchmark tests with performance validation
 
 **Note:** The 8.1% uncovered code consists primarily of error handling paths for rare system-level failures (e.g., RNG failures, memory allocation errors) and defensive validation code. All security-critical functionality has complete test coverage.

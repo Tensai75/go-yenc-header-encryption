@@ -261,6 +261,23 @@ func (c *Cipher) initializeOnce(saltString string) error {
 	return initErr
 }
 
+// Salt returns the current salt used by the cipher for key derivation.
+// This method provides access to the salt that was either generated during
+// initialization or extracted during decryption operations.
+//
+// Returns:
+//   - []byte: 16-byte salt used for Argon2id key derivation, or nil if cipher is not initialized
+//
+// Example:
+//
+//	cipher, _ := NewCipher("password")
+//	cipher.Initialize("")  // Generate new salt
+//	salt := cipher.Salt()
+//	fmt.Printf("Salt: %x", salt)
+func (c *Cipher) Salt() []byte {
+	return c.salt
+}
+
 // EncryptLine encrypts a single yEnc control line using FF1 format-preserving encryption.
 // This method preserves the original line ending and ensures the output uses only yEnc alphabet characters.
 // CAUTION: This methode expects that the cipher has already been initialized via Initialize or initializeOnce.

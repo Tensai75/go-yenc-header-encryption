@@ -259,6 +259,91 @@ func TestCipherInitialize(t *testing.T) {
 	}
 }
 
+// Test the Cipher.Salt function
+func TestCipherSalt(t *testing.T) {
+	cipher, err := NewCipher("testpassword")
+	if err != nil {
+		t.Fatalf("NewCipher failed: %v", err)
+	}
+
+	// Test uninitialized cipher (should return nil)
+	salt := cipher.Salt()
+	if salt != nil {
+		t.Error("Uninitialized cipher should return nil salt")
+	}
+
+	// Test cipher initialized with generated salt
+	err = cipher.Initialize("")
+	if err != nil {
+		t.Fatalf("Initialize with empty salt failed: %v", err)
+	}
+
+	salt = cipher.Salt()
+	if salt == nil {
+		t.Error("Initialized cipher should return non-nil salt")
+	}
+
+	if len(salt) != 16 {
+		t.Errorf("Expected salt length 16, got %d", len(salt))
+	}
+
+	// Verify salt contains only yEnc alphabet characters
+	alphabet := Alphabet()
+	for i, b := range salt {
+		if !bytes.Contains(alphabet, []byte{b}) {
+			t.Errorf("Salt byte %d (0x%02X) is not in yEnc alphabet", i, b)
+		}
+	}
+
+	// Test cipher initialized with provided salt
+	cipher2, _ := NewCipher("testpassword")
+	testSalt := "1234567890123456"
+	err = cipher2.Initialize(testSalt)
+	if err != nil {
+		t.Fatalf("Initialize with provided salt failed: %v", err)
+	}
+
+	salt2 := cipher2.Salt()
+	if salt2 == nil {
+		t.Error("Initialized cipher should return non-nil salt")
+	}
+
+	if string(salt2) != testSalt {
+		t.Errorf("Expected salt '%s', got '%s'", testSalt, string(salt2))
+	}
+
+	// Test that Salt() returns the actual salt reference (not a copy)
+	// Modifying returned salt should affect the cipher's internal salt
+	originalByte := salt2[0]
+	salt2[0] = 0xFF
+	if cipher2.salt[0] != 0xFF {
+		t.Error("Salt() should return reference to internal salt, not a copy")
+	}
+	// Restore original value
+	salt2[0] = originalByte
+
+	// Test salt consistency across multiple calls
+	salt3 := cipher2.Salt()
+	if !bytes.Equal(salt2, salt3) {
+		t.Error("Multiple Salt() calls should return identical data")
+	}
+
+	// Test salt after initializeOnce
+	cipher3, _ := NewCipher("testpassword")
+	err = cipher3.initializeOnce("")
+	if err != nil {
+		t.Fatalf("initializeOnce failed: %v", err)
+	}
+
+	salt4 := cipher3.Salt()
+	if salt4 == nil {
+		t.Error("Cipher initialized via initializeOnce should have salt")
+	}
+	if len(salt4) != 16 {
+		t.Errorf("Expected salt length 16, got %d", len(salt4))
+	}
+}
+
 // Test error handling for createCipher
 func TestCreateCipherErrors(t *testing.T) {
 	cipher, err := NewCipher("testpassword")
@@ -275,11 +360,11 @@ func TestCreateCipherErrors(t *testing.T) {
 	}
 
 	// Invalid alphabet (empty)
-	cipher, _ = NewCipher("testpassword")
-	cipher.alphabet = []byte{}
-	cipher.masterKey = make([]byte, 32)
-	cipher.encKey = make([]byte, 32)
-	_, err = cipher.createCipher(1, 1)
+	cipher4, _ := NewCipher("testpassword")
+	cipher4.alphabet = []byte{}
+	cipher4.masterKey = make([]byte, 32)
+	cipher4.encKey = make([]byte, 32)
+	_, err = cipher4.createCipher(1, 1)
 	if err == nil {
 		t.Error("createCipher should fail with empty alphabet")
 	}
